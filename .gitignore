@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# Audio scratch (commit curated samples explicitly under week*/samples/)
+*.tmp.wav
+*.scratch.wav
+
+# Large model artifacts — should live in HF cache, not the repo
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Logs / profiling
+*.log
+profiler_output/
