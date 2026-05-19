@@ -11,16 +11,23 @@ End state: a Gradio demo a non-engineer can click through, plus a handoff packag
 ## Repo layout
 
 ```
-week0/  Python + ML bootstrap (5 days)
-week1/  Audio and tensors
-week2/  Hugging Face mental model
-week3/  Shrutam-2 (ASR) evaluation
-week4/  Sooktam-2 (TTS) evaluation
-week5/  IndicTrans2 (translation) evaluation
-week6/  Pipeline integration + Gradio UI
-week7/  Profile, document, hand off
-docs/   The 8-week plan and tracker
+week0/    Python + ML bootstrap (5 days)
+week1/    Audio and tensors
+week2/    Hugging Face mental model
+week3/    Shrutam-2 (ASR) evaluation
+week4/    Sooktam-2 (TTS) evaluation
+week5/    IndicTrans2 (translation) evaluation
+week6/    Pipeline integration + Gradio UI
+week7/    Profile, document, hand off
+docs/     The 8-week plan and tracker (xlsx + generated views)
+scripts/  Tooling — render_tracker.py regenerates docs/TRACKER.md + docs/tracker.csv
 ```
+
+## Tracker
+
+- [`docs/TRACKER.md`](docs/TRACKER.md) — status summary, per-week progress, deliverables, cadence, glossary, resources (GitHub-rendered Markdown)
+- [`docs/tracker.csv`](docs/tracker.csv) — full 98-item tracker (GitHub renders CSV as a sortable, searchable table)
+- [`docs/bharatgen_intern_tracker.xlsx`](docs/bharatgen_intern_tracker.xlsx) — source of truth; edit this, then run `python scripts/render_tracker.py` to regenerate the views
 
 Each `weekN/` has a `README.md` with that week's goals, hands-on tasks, deliverables, and anti-patterns.
 
