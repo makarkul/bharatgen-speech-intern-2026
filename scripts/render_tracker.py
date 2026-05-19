@@ -7,6 +7,11 @@ Generated:
                        + Glossary + Learning Resources, plus summary stats)
 
 Usage: python scripts/render_tracker.py
+
+A GitHub Action at .github/workflows/render-tracker.yml runs this script
+automatically when the xlsx (or this script) is pushed, and commits the
+regenerated views back to the branch. Running locally is only needed if
+you want to preview before pushing.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ scripts/  Tooling — render_tracker.py regenerates docs/TRACKER.md + docs/track
 
 - [`docs/TRACKER.md`](docs/TRACKER.md) — status summary, per-week progress, deliverables, cadence, glossary, resources (GitHub-rendered Markdown)
 - [`docs/tracker.csv`](docs/tracker.csv) — full 98-item tracker (GitHub renders CSV as a sortable, searchable table)
-- [`docs/bharatgen_intern_tracker.xlsx`](docs/bharatgen_intern_tracker.xlsx) — source of truth; edit this, then run `python scripts/render_tracker.py` to regenerate the views
+- [`docs/bharatgen_intern_tracker.xlsx`](docs/bharatgen_intern_tracker.xlsx) — source of truth; edit and push, and the [`Render tracker`](../../actions/workflows/render-tracker.yml) GitHub Action regenerates the Markdown + CSV views automatically. To regenerate locally: `python scripts/render_tracker.py`.
 
 Each `weekN/` has a `README.md` with that week's goals, hands-on tasks, deliverables, and anti-patterns.
 

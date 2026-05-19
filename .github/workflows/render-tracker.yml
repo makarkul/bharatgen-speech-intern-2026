@@ -1,0 +1,44 @@
+name: Render tracker
+
+on:
+  push:
+    paths:
+      - 'docs/bharatgen_intern_tracker.xlsx'
+      - 'scripts/render_tracker.py'
+      - '.github/workflows/render-tracker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use a PAT-less token; default token can push back to the same branch
+          # because permissions.contents: write is set above.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install openpyxl
+
+      - name: Regenerate tracker views
+        run: python scripts/render_tracker.py
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet docs/TRACKER.md docs/tracker.csv; then
+            echo "No changes to tracker views."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/TRACKER.md docs/tracker.csv
+          git commit -m "Regenerate tracker views from xlsx [skip ci]"
+          git push
