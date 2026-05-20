@@ -22,3 +22,5 @@ Most models before transformers focused on one word at a time, they did not have
 Attention refers to giving more priority to things that matter more. In a sentance, the attention is important because newer words can connect to words depending on the priority of the word. The more importance a word has, the higher its attention will be. 
 
 Transformers were designed so that we can remember the context of the previous words better while moving onto the newer words. It goes in a sequential order. It could do this better because it ran many tokens at the same time parallely, this improved its parallelism. 
+
+Reference: https://jalammar.github.io/illustrated-transformer/
