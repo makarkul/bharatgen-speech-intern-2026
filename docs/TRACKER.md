@@ -7,9 +7,9 @@ Source of truth: [`bharatgen_intern_tracker.xlsx`](bharatgen_intern_tracker.xlsx
 | Metric | Count |
 | --- | --- |
 | Total items | 98 |
-| ⬜ Not Started | 69 |
-| ✅ Done | 29 |
-| % Complete | 29.6% |
+| ⬜ Not Started | 60 |
+| ✅ Done | 38 |
+| % Complete | 38.8% |
 
 ## Project setup
 
@@ -32,7 +32,7 @@ GitHub renders CSV files as a sortable, searchable table — open [`tracker.csv`
 | Week | Done | % | 🟡 In Progress | 🔴 Blocked | ⬜ Not Started |
 | --- | --- | --- | --- | --- | --- |
 | Week 0 | 27/28 | 96% | 0 | 0 | 1 |
-| Week 1 | 2/11 | 18% | 0 | 0 | 9 |
+| Week 1 | 11/11 | 100% | 0 | 0 | 0 |
 | Week 2 | 0/11 | 0% | 0 | 0 | 11 |
 | Week 3 | 0/9 | 0% | 0 | 0 | 9 |
 | Week 4 | 0/11 | 0% | 0 | 0 | 11 |
@@ -45,7 +45,7 @@ GitHub renders CSV files as a sortable, searchable table — open [`tracker.csv`
 | Week | Deliverable | Description | Why it matters | Status | Evidence / Link |
 | --- | --- | --- | --- | --- | --- |
 | Week 0 | week0_bootstrap.ipynb + reflection.md | Notebook covering numpy, matplotlib, first PyTorch tensor, first HF pipeline() call. reflection.md = 1-page 'what is a NN' in his own words. | Diagnostic for whether bootstrap landed. Vague reflection -> slow Week 1 down. | Done | https://github.com/makarkul/bharatgen-speech-intern-2026/tree/claude/setup-intern-project-FkRbX/week0 |
-| Week 1 | week1_audio_basics.ipynb + audio_cheatsheet.md | Audio plots + 1-page cheatsheet on sampling rate, mono/stereo, resampling, mel-spectrogram. | Cheatsheet seeds the handoff package. | Not Started |  |
+| Week 1 | week1_audio_basics.ipynb + audio_cheatsheet.md | Audio plots + 1-page cheatsheet on sampling rate, mono/stereo, resampling, mel-spectrogram. | Cheatsheet seeds the handoff package. | Done | https://github.com/makarkul/bharatgen-speech-intern-2026/tree/claude/setup-intern-project-FkRbX/week1 |
 | Week 2 | how_to_run_an_hf_model.md | Tutorial: AutoModel/Tokenizer/Processor, cache, eval mode, no_grad. Code + screenshots. | Writing-for-others test of understanding. | Not Started |  |
 | Week 3 | week3_shrutam2_eval.md | WER table (Shrutam-2 vs Whisper, per language), profiling table, 5 failure cases with hypotheses. | First quantitative comparison. Establishes the rigor bar. | Not Started |  |
 | Week 4 | week4_sooktam2_eval.md + audio samples | Markdown + audio. Indic Parler comparison. Edge-case failures documented. | Quality claims backed by listenable artifacts. | Not Started |  |
