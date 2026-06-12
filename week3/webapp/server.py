@@ -22,6 +22,7 @@ import io
 import math
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import wave
@@ -192,6 +193,24 @@ def _fake_beep_wav(duration_s: float, freq_hz: int, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _to_wav_16k_mono(src_path: str, dst_path: str) -> None:
+    """Transcode any audio (webm/ogg/mp4/wav/...) to 16 kHz mono 16-bit WAV.
+
+    Browsers hand us Opus-in-webm, which soundfile can't decode. ffmpeg can read
+    essentially anything, so we normalize here before the models touch the file.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", src_path, "-ac", "1", "-ar", "16000",
+         "-f", "wav", dst_path],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "ffmpeg failed to convert the uploaded audio:\n"
+            + result.stderr.decode("utf-8", "replace")[-500:]
+        )
+
+
 @app.post("/speak")
 async def speak_endpoint(
     audio: UploadFile = File(...),
@@ -204,17 +223,23 @@ async def speak_endpoint(
     shows the text and plays the audio. We base64 the audio so text + audio fit
     in one JSON response (one round-trip instead of two).
     """
-    # Shrutam-2's inference() takes a FILE PATH, so we write the upload to disk.
+    # Browsers record as .webm (Opus), which soundfile can't read. Save the raw
+    # upload, then transcode to 16 kHz mono WAV with ffmpeg so the models (which
+    # expect WAV via soundfile) can load it. Resampling to 16 kHz also matches
+    # what Shrutam-2 was trained on.
     suffix = Path(audio.filename or "rec.webm").suffix or ".webm"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await audio.read())
-        tmp_path = tmp.name
+        raw_path = tmp.name
+    wav_path = raw_path + ".wav"
 
     try:
-        text = transcribe(tmp_path, language)      # step 1: speech -> text
+        _to_wav_16k_mono(raw_path, wav_path)        # step 0: any format -> 16k mono WAV
+        text = transcribe(wav_path, language)       # step 1: speech -> text
         wav_bytes = synthesize(text, voice)         # step 2: text -> speech
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        Path(raw_path).unlink(missing_ok=True)
+        Path(wav_path).unlink(missing_ok=True)
 
     return {
         "text": text,

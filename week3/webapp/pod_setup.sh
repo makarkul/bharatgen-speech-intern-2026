@@ -29,6 +29,11 @@ if [ "$MODELS_OK" = 0 ]; then
     exit 1
 fi
 
+echo ">>> [0/3] Installing ffmpeg (decodes the browser's webm uploads) ..."
+# soundfile can't read the Opus/webm a browser records; ffmpeg transcodes it to
+# WAV in /speak. Also satisfies pydub's ffmpeg lookup.
+apt-get update -qq && apt-get install -y -qq ffmpeg
+
 echo ">>> [1/3] Installing Blackwell-capable torch (cu128) + all deps ..."
 # cu128 wheels carry sm_120 kernels for the RTX PRO 4500. --force-reinstall is
 # mandatory: a plain install sees torch 'already satisfied' and does nothing.
