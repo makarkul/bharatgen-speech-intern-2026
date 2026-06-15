@@ -6,6 +6,21 @@ The easiest way to do this is with the pipeline function. IT handles all the pro
 
 But to understand whats actually happening inside the function, we have to do it manually. 
 
+### pipeline() vs manual loading
+
+`pipeline()` does everything in one line. The manual path does the exact same work, just spelled out step by step. Same input, same answer.
+
+```python
+# pipeline()                                  # manual (what pipeline does under the hood)
+from transformers import pipeline             # AutoTokenizer.from_pretrained(model_name)  -> load tokenizer
+                                              # tokenizer(text, return_tensors="pt")       -> tokenize (text -> numbers)
+clf = pipeline("sentiment-analysis",          # AutoModelForSequenceClassification.from_pretrained(model_name) -> load model
+               model=model_name)              # model(**inputs)                            -> forward pass (-> logits)
+clf("I love this movie!")                     # torch.softmax(logits, dim=-1)              -> softmax (logits -> probabilities)
+```
+
+Both print `POSITIVE` with a score of about `0.9999` for `"I love this movie!"`. The pipeline just hides the five manual steps: load tokenizer, tokenize, load model, forward pass, softmax.
+
 ### The process
 
 We first get the raw input. We preprocess this using tokenizers and convert it into numbers.  
@@ -26,6 +41,23 @@ When we run some code which requires a HF model, it downloads it from the HF web
 This makes it faster when we want to run repetitive tasks.  
 
 But we have to be careful, when I tried doing it with multiple model in different notebooks, my laptop started lagging a lot and slowed down. So we have to make sure the laptop is compatible enough for it. There was a python feature called pylanche. This is responsible for autocomplete features in python. This was occupying approx 2GB of my RAM. So, I had to disable it completely.
+
+```
+(.venv) chaitanya@LAPTOP-M79K4R8E:~/bharatgen-speech-intern-2026$ ls -la ~/.cache/huggingface/hub/
+total 40
+drwxr-xr-x 9 chaitanya chaitanya 4096 Jun  8 05:33 .
+drwxr-xr-x 5 chaitanya chaitanya 4096 Jun  5 11:10 ..
+drwxr-xr-x 9 chaitanya chaitanya 4096 Jun  8 05:33 .locks
+-rw-r--r-- 1 chaitanya chaitanya  191 May 15 11:54 CACHEDIR.TAG
+drwxr-xr-x 6 chaitanya chaitanya 4096 Jun  5 11:10 datasets--ai4bharat--Shrutilipi
+drwxr-xr-x 6 chaitanya chaitanya 4096 May 26 07:15 models--HuggingFaceTB--SmolLM2-360M
+drwxr-xr-x 5 chaitanya chaitanya 4096 Jun  8 05:33 models--bharatgenai--Shrutam-2
+drwxr-xr-x 6 chaitanya chaitanya 4096 May 15 11:54 models--distilbert--distilbert-base-uncased-finetuned-sst-2-english
+drwxr-xr-x 6 chaitanya chaitanya 4096 May 27 05:42 models--distilbert-base-uncased-finetuned-sst-2-english
+drwxr-xr-x 6 chaitanya chaitanya 4096 Jun  1 05:53 models--openai--whisper-tiny
+```
+
+Each model gets stored here after downloading, so we dont have to download it again and again.
 
 ## Training Mode vs Inference
 
