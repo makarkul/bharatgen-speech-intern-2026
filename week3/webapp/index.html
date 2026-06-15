@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shrutam-2 + Sooktam-2 · Speech to Speech</title>
+  <style>
+    :root {
+      --bg: #0f1420;
+      --card: #1a2232;
+      --accent: #5b8cff;
+      --accent-rec: #ff5b6e;
+      --text: #e8edf7;
+      --muted: #8b97ad;
+      --border: #2a3447;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px;
+      width: 100%;
+      max-width: 560px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 650;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 28px;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      outline: none;
+    }
+    select:focus { border-color: var(--accent); }
+    .mic-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 14px 20px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.05s;
+    }
+    .mic-btn:hover { background: #4a7bf0; }
+    .mic-btn:active { transform: scale(0.98); }
+    .mic-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .mic-btn.recording { background: var(--accent-rec); }
+    .mic-btn.recording:hover { background: #f0495c; }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: white;
+    }
+    .mic-btn.recording .dot { animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 12px;
+      min-height: 1.2em;
+    }
+    .output {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      min-height: 120px;
+      font-size: 1.05rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .output.placeholder { color: var(--muted); font-size: 0.95rem; }
+    .audio-wrap {
+      margin-top: 16px;
+      display: none;            /* hidden until we have audio to play */
+    }
+    .audio-wrap.show { display: block; }
+    .audio-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    audio { width: 100%; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Shrutam-2 + Sooktam-2 · Speech to Speech</h1>
+    <p class="subtitle">Speak, see it transcribed, and hear it spoken back.</p>
+
+    <div class="controls">
+      <select id="language" title="Language you will speak in">
+        <option value="hindi">Hindi · हिन्दी</option>
+        <option value="marathi">Marathi · मराठी</option>
+        <option value="tamil">Tamil · தமிழ்</option>
+        <option value="telugu">Telugu · తెలుగు</option>
+        <option value="malayalam">Malayalam · മലയാളം</option>
+        <option value="kannada">Kannada · ಕನ್ನಡ</option>
+        <option value="odia">Odia · ଓଡ଼ିଆ</option>
+        <option value="bengali">Bengali · বাংলা</option>
+        <option value="urdu">Urdu · اردو</option>
+        <option value="assamese">Assamese · অসমীয়া</option>
+        <option value="gujarati">Gujarati · ગુજરાતી</option>
+        <option value="punjabi">Punjabi · ਪੰਜਾਬੀ</option>
+      </select>
+      <!-- Voice to speak the result in. Filled at load time from GET /voices. -->
+      <select id="voice" title="Voice to synthesize the reply in"></select>
+      <button class="mic-btn" id="micBtn">
+        <span class="dot"></span>
+        <span id="micLabel">Start recording</span>
+      </button>
+    </div>
+
+    <p class="status" id="status"></p>
+    <div class="output placeholder" id="output">Your transcription will appear here.</div>
+
+    <div class="audio-wrap" id="audioWrap">
+      <div class="audio-label">Synthesized speech</div>
+      <audio id="player" controls></audio>
+    </div>
+  </div>
+
+  <script>
+    // Where the backend lives. Same machine for now; for RunPod, change this to
+    // the pod's proxy URL, e.g. "https://<pod-id>-8000.proxy.runpod.net".
+    const API_BASE = "http://localhost:8000";
+    const SPEAK_URL = API_BASE + "/speak";
+    const VOICES_URL = API_BASE + "/voices";
+
+    const micBtn = document.getElementById("micBtn");
+    const micLabel = document.getElementById("micLabel");
+    const statusEl = document.getElementById("status");
+    const outputEl = document.getElementById("output");
+    const languageEl = document.getElementById("language");
+    const voiceEl = document.getElementById("voice");
+    const audioWrap = document.getElementById("audioWrap");
+    const player = document.getElementById("player");
+
+    let mediaRecorder = null;
+    let chunks = [];
+    let recording = false;
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    function showOutput(text, isPlaceholder = false) {
+      outputEl.textContent = text;
+      outputEl.classList.toggle("placeholder", isPlaceholder);
+    }
+
+    // Populate the voice picker from the backend, so the page and server never
+    // disagree on what voices exist.
+    async function loadVoices() {
+      try {
+        const res = await fetch(VOICES_URL);
+        const voices = await res.json();
+        voiceEl.innerHTML = "";
+        for (const [key, v] of Object.entries(voices)) {
+          const opt = document.createElement("option");
+          opt.value = key;
+          opt.textContent = v.label || key;
+          voiceEl.appendChild(opt);
+        }
+      } catch (err) {
+        setStatus("Could not load voices: " + err.message + " (is the backend running?)");
+      }
+    }
+    loadVoices();
+
+    // Decode the base64 WAV the server returns and hand it to the <audio> player.
+    function playAudio(base64Wav) {
+      const bytes = Uint8Array.from(atob(base64Wav), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      if (player.dataset.url) URL.revokeObjectURL(player.dataset.url);  // free the previous one
+      player.dataset.url = url;
+      player.src = url;
+      audioWrap.classList.add("show");
+      player.play().catch(() => {});  // autoplay may be blocked; the controls still work
+    }
+
+    micBtn.addEventListener("click", async () => {
+      if (!recording) {
+        await startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    async function startRecording() {
+      try {
+        // Ask the browser for the microphone. Prompts the user the first time.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        chunks = [];
+
+        mediaRecorder.addEventListener("dataavailable", (e) => chunks.push(e.data));
+        mediaRecorder.addEventListener("stop", () => {
+          // Release the mic so the browser tab indicator turns off.
+          stream.getTracks().forEach((t) => t.stop());
+          sendAudio(new Blob(chunks, { type: "audio/webm" }));
+        });
+
+        mediaRecorder.start();
+        recording = true;
+        micBtn.classList.add("recording");
+        micLabel.textContent = "Stop recording";
+        setStatus("Listening… speak now.");
+      } catch (err) {
+        setStatus("Could not access microphone: " + err.message);
+      }
+    }
+
+    function stopRecording() {
+      mediaRecorder.stop();
+      recording = false;
+      micBtn.classList.remove("recording");
+      micLabel.textContent = "Start recording";
+      setStatus("Transcribing…");
+    }
+
+    async function sendAudio(blob) {
+      micBtn.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "recording.webm");
+        form.append("language", languageEl.value);
+        form.append("voice", voiceEl.value);
+
+        const res = await fetch(SPEAK_URL, { method: "POST", body: form });
+        if (!res.ok) throw new Error("Server returned " + res.status);
+
+        const data = await res.json();
+        showOutput(data.text || "(empty response)");
+        if (data.audio) {
+          setStatus("Done — playing synthesized speech.");
+          playAudio(data.audio);
+        } else {
+          setStatus("Done (no audio returned).");
+        }
+      } catch (err) {
+        setStatus("Error: " + err.message);
+        showOutput("Something went wrong. Is the backend running?", true);
+      } finally {
+        micBtn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
