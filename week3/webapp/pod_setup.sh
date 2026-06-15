@@ -84,11 +84,23 @@ echo ">>> [1/4] Installing ffmpeg (decodes the browser's webm uploads) ..."
 # WAV in /speak. Also satisfies pydub's ffmpeg lookup.
 apt-get update -qq && apt-get install -y -qq ffmpeg
 
-echo ">>> [2/4] Installing Blackwell-capable torch (cu128) + all deps ..."
-# cu128 wheels carry sm_120 kernels for the RTX PRO 4500. --force-reinstall is
-# mandatory: a plain install sees torch 'already satisfied' and does nothing.
-pip install --no-cache-dir --force-reinstall \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+echo ">>> [2/4] Checking whether the installed torch supports this GPU ..."
+# The pod's stock torch works on older GPUs (e.g. RTX 3090 / sm_86) but NOT on a
+# brand-new Blackwell card (RTX PRO 4500 / sm_120) — there it crashes with "no
+# kernel image is available". Rather than hardcode a GPU list, we PROBE: try a
+# tiny GPU op. If it works, keep the stock torch. If it fails, the GPU is too new
+# and we install the cu128 build (which carries newer-architecture kernels).
+if python3 -c "import torch; assert torch.cuda.is_available(); (torch.randn(8,8,device='cuda')@torch.randn(8,8,device='cuda')).sum().item()" 2>/dev/null; then
+    echo "    Installed torch already runs on this GPU — keeping it."
+else
+    echo "    Installed torch can't run on this GPU (likely a new Blackwell card) — installing cu128 build ..."
+    # --force-reinstall is mandatory: a plain install sees torch 'already
+    # satisfied' and does nothing. Install the trio together so versions match.
+    pip install --no-cache-dir --force-reinstall \
+        torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+fi
+
+echo ">>> [2/4] Installing the rest of the Python deps ..."
 pip install --no-cache-dir \
     fastapi uvicorn python-multipart numpy \
     transformers==4.56.2 huggingface_hub==0.36.0 cffi sympy soundfile \
