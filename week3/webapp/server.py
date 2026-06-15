@@ -142,20 +142,37 @@ def transcribe(wav_path: str, language: str) -> str:
     return str(text).strip()
 
 
-def synthesize(text: str, voice: str) -> bytes:
-    """Turn text into speech (Sooktam-2). Returns WAV bytes."""
+def synthesize(text: str, voice: str, language: str,
+               ref_file: str | None = None, ref_text: str | None = None) -> bytes:
+    """Turn text into speech (Sooktam-2). Returns WAV bytes.
+
+    Sooktam clones a reference voice. Normally that's a preset (VOICES[voice]).
+    But if ref_file + ref_text are passed (the "use my own voice" mode), we clone
+    those instead — the caller hands us the user's own recording + its transcript.
+    """
     if STUB_MODE:
         # Fake beep so the browser's audio path is testable without a GPU.
         return _fake_beep_wav(duration_s=0.6, freq_hz=440, sample_rate=16000)
-    v = VOICES[voice]
-    # VOICES_DIR is absolute (__file__-based), so Shrutam's os.chdir doesn't
-    # break this path. Output is 24 kHz; we encode the float array to WAV bytes.
+
+    if ref_file is not None:
+        # "Use my voice": clone the user's own clip. cls_language follows the
+        # spoken language (the reference and the text are the same language here).
+        clone_ref_file, clone_ref_text, cls_language = ref_file, ref_text or "", language
+    else:
+        v = VOICES[voice]
+        # VOICES_DIR is absolute (__file__-based), so Shrutam's os.chdir doesn't
+        # break this path.
+        clone_ref_file, clone_ref_text, cls_language = (
+            str(VOICES_DIR / v["ref_file"]), v["ref_text"], v["language"],
+        )
+
+    # Output is 24 kHz; we encode the float array to WAV bytes.
     wav, sr, _ = _sooktam.infer(
-        ref_file=str(VOICES_DIR / v["ref_file"]),
-        ref_text=v["ref_text"],
+        ref_file=clone_ref_file,
+        ref_text=clone_ref_text,
         gen_text=text,
         tokenizer="cls",
-        cls_language=v["language"],
+        cls_language=cls_language,
     )
     return _wav_to_bytes(wav, sr)
 
@@ -236,7 +253,13 @@ async def speak_endpoint(
     try:
         _to_wav_16k_mono(raw_path, wav_path)        # step 0: any format -> 16k mono WAV
         text = transcribe(wav_path, language)       # step 1: speech -> text
-        wav_bytes = synthesize(text, voice)         # step 2: text -> speech
+        if voice == "mine":
+            # "Use my voice": clone the user's own recording, using their just-
+            # transcribed text as the reference transcript.
+            wav_bytes = synthesize(text, voice, language,
+                                   ref_file=wav_path, ref_text=text)
+        else:
+            wav_bytes = synthesize(text, voice, language)   # step 2: text -> speech (preset)
     finally:
         Path(raw_path).unlink(missing_ok=True)
         Path(wav_path).unlink(missing_ok=True)
@@ -249,8 +272,11 @@ async def speak_endpoint(
 
 @app.get("/voices")
 async def voices_endpoint():
-    """List the preset TTS voices, so the frontend can build its voice picker."""
-    return {key: {"label": v["label"]} for key, v in VOICES.items()}
+    """List the TTS voices for the frontend's picker: the presets plus a special
+    'mine' option that clones whatever the user just recorded."""
+    voices = {key: {"label": v["label"]} for key, v in VOICES.items()}
+    voices["mine"] = {"label": "Use my voice"}
+    return voices
 
 
 @app.get("/")
