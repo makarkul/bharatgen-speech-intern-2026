@@ -21,13 +21,13 @@ Param-2 needs `transformers==4.52.3`; the Shrutam-2 + Sooktam-2 stack needs
 `4.56.2`. They can't coexist in one process, so they run as **two services**:
 
 ```
-main server :8000            param service :8001
+main server :8000            param service :8500
 (transformers 4.56.2)        (transformers 4.52.3, own venv)
 Shrutam-2 + Sooktam-2  --HTTP-->  Param-2
 ```
 
 The main server calls the param service via `PARAM_URL` (default
-`http://localhost:8001`). This keeps the verified ASR/TTS stack untouched.
+`http://localhost:8500`). This keeps the verified ASR/TTS stack untouched.
 
 ## Files
 

@@ -7,7 +7,7 @@
 #
 # Two services come up:
 #   * main server :8000  — Shrutam-2 (ASR) + Sooktam-2 (TTS), transformers 4.56.2
-#   * param service :8001 — Param-2 translation, transformers 4.52.3, OWN venv
+#   * param service :8500 — Param-2 translation, transformers 4.52.3, OWN venv
 # They run separately because their transformers versions clash. The main server
 # calls the param service over HTTP (PARAM_URL).
 #
@@ -136,7 +136,7 @@ pip install --no-cache-dir --force-reinstall \
 python3 -c "from transformers import pipeline" || {
     echo "    !!! torch/torchvision still mismatched — check versions before proceeding."; exit 1; }
 
-echo ">>> [4/7] Re-applying the 4 source patches ..."
+echo ">>> [4/7] Re-applying the source patches ..."
 python3 - <<'PY'
 from pathlib import Path
 
@@ -182,18 +182,32 @@ if old3 in t:
     u.write_text(t.replace(old3, new3)); print("  [D] Sooktam soundfile applied")
 else:
     print("  [D] Sooktam soundfile:", "already present" if "_sf.read(ref_audio" in t else "WARN line not found")
+
+# Patch E: Shrutam runs an UNGUARDED demo at import bottom —
+# print(inference("blindtest_250138.wav", ...)) — but that sample file isn't in
+# the repo, so the import crashes. We import inference_script (not run it), and
+# call inference() per request, so drop the demo line.
+import re as _re
+lines = f.read_text().splitlines(keepends=True)
+kept = [ln for ln in lines if not ln.startswith('print(inference("blindtest_250138.wav"')]
+if len(kept) != len(lines):
+    f.write_text("".join(kept)); print("  [E] Shrutam import-time demo removed")
+else:
+    print("  [E] Shrutam import-time demo: not found (already removed or absent)")
 PY
 
 echo ">>> [5/7] Starting the MAIN server (ASR+TTS) on :8000 ..."
 cd /workspace/bharatgen-speech-intern-2026/pipeline
-export PARAM_URL=http://localhost:8001   # where the main server finds the translator
+# Param service uses :8500, NOT :8001 — RunPod's own nginx squats 8001 inside the
+# container, so binding it fails. 8500 is free. It's internal (localhost) only.
+export PARAM_URL=http://localhost:8500   # where the main server finds the translator
 # kill any previous instance on 8000
 fuser -k 8000/tcp 2>/dev/null || true
 sleep 1
 nohup uvicorn server:app --host 0.0.0.0 --port 8000 > /workspace/server.log 2>&1 &
 echo ">>> Main server starting (PID $!). ASR/TTS load in ~30-40s."
 
-echo ">>> [6/7] Setting up + starting the PARAM-2 service on :8001 (own venv) ..."
+echo ">>> [6/7] Setting up + starting the PARAM-2 service on :8500 (own venv) ..."
 # Param-2 needs transformers==4.52.3, which clashes with the main stack's 4.56.2.
 # So it lives in its own venv. We create it once (idempotent) on /workspace so it
 # survives restarts. The 17B weights download into HF_HOME on first model load.
@@ -212,9 +226,9 @@ if [ ! -d "$PARAM_VENV" ]; then
 else
     echo "    Param venv already exists — skipping create."
 fi
-fuser -k 8001/tcp 2>/dev/null || true
+fuser -k 8500/tcp 2>/dev/null || true
 sleep 1
-nohup "$PARAM_VENV/bin/uvicorn" param_service:app --host 0.0.0.0 --port 8001 \
+nohup "$PARAM_VENV/bin/uvicorn" param_service:app --host 0.0.0.0 --port 8500 \
     > /workspace/param_service.log 2>&1 &
 echo ">>> Param-2 service starting (PID $!). It PRE-LOADS the 17B model at startup,"
 echo "    so it takes a while before /health reports loaded=true (or fails loudly)."
@@ -224,7 +238,7 @@ echo ">>> [7/7] Waiting for the Param-2 service to finish loading the model ..."
 # even come up?" from a log-reading chore into a clear PASS/FAIL line.
 PARAM_OK=0
 for i in $(seq 1 60); do          # up to ~10 min (17B load + first-time weight download)
-    H=$(curl -s http://localhost:8001/health 2>/dev/null || true)
+    H=$(curl -s http://localhost:8500/health 2>/dev/null || true)
     case "$H" in
         *'"loaded":true'*)  PARAM_OK=1; break ;;
     esac
@@ -241,4 +255,4 @@ fi
 echo ""
 echo ">>> Watch:   tail -f /workspace/server.log /workspace/param_service.log"
 echo ">>> Main ready when you see: 'Uvicorn running on http://0.0.0.0:8000'"
-echo ">>> NOTE: expose port 8000 (and 8001 only if testing the translator directly)."
+echo ">>> NOTE: expose port 8000 (and 8500 only if testing the translator directly)."

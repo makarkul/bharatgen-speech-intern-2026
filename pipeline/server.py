@@ -87,7 +87,7 @@ else:
 # If the service is down/unreachable, cross-language requests surface a clear
 # error; same-language requests never call it.
 # ---------------------------------------------------------------------------
-PARAM_URL = os.environ.get("PARAM_URL", "http://localhost:8001") + "/translate"
+PARAM_URL = os.environ.get("PARAM_URL", "http://localhost:8500") + "/translate"
 print(f">>> Translator: Param-2 service at {PARAM_URL}", flush=True)
 
 # The page and this server may be two separate origins (e.g. the page is local

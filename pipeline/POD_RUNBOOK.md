@@ -25,7 +25,7 @@ already exist on the pod.
 | **Template** | a PyTorch template | gives Python + CUDA base |
 | **Expose HTTP port** | **8000** | ⚠️ set at CREATION — RunPod only proxies ports declared up front. Adding it later restarts the pod (wipes ephemeral disk). |
 
-Port 8001 (Param service) does NOT need exposing — the main server reaches it
+Port 8500 (Param service) does NOT need exposing — the main server reaches it
 internally via localhost.
 
 ## 2. Get the code (in the pod's web terminal)
@@ -50,7 +50,7 @@ This (idempotently):
 2. Installs ffmpeg + probes the GPU, installing cu128 torch only if needed.
 3. Installs main-stack deps (transformers 4.56.2) + applies the 4 source patches.
 4. Starts the MAIN server (ASR+TTS) on :8000.
-5. Creates the Param-2 venv (transformers 4.52.3) + starts the Param service on :8001.
+5. Creates the Param-2 venv (transformers 4.52.3) + starts the Param service on :8500.
 6. Polls until Param-2 reports loaded — prints **PASS** or **WARN**.
 
 `HF_HOME=/workspace/hf_cache` so the big Param-2 download lands on the volume
@@ -67,8 +67,8 @@ tail -f /workspace/server.log /workspace/param_service.log
 ## 5. Sanity-check the translator directly
 
 ```bash
-curl -s http://localhost:8001/health          # {"ok":true,"loaded":true}
-curl -s -X POST http://localhost:8001/translate \
+curl -s http://localhost:8500/health          # {"ok":true,"loaded":true}
+curl -s -X POST http://localhost:8500/translate \
   -H "Content-Type: application/json" \
   -d '{"text":"नमस्ते, आप कैसे हैं?","src":"hindi","tgt":"tamil"}'
 ```
