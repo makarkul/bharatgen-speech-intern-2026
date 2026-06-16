@@ -102,28 +102,39 @@ echo ">>> [1/7] Installing ffmpeg (decodes the browser's webm uploads) ..."
 # WAV in /speak. Also satisfies pydub's ffmpeg lookup.
 apt-get update -qq && apt-get install -y -qq ffmpeg
 
-echo ">>> [2/7] Checking whether the installed torch supports this GPU ..."
-# The pod's stock torch works on older GPUs (e.g. RTX 3090 / sm_86) but NOT on a
-# brand-new Blackwell card (RTX PRO 4500 / sm_120) — there it crashes with "no
-# kernel image is available". Rather than hardcode a GPU list, we PROBE: try a
-# tiny GPU op. If it works, keep the stock torch. If it fails, the GPU is too new
-# and we install the cu128 build (which carries newer-architecture kernels).
+echo ">>> [2/7] Probing the GPU to choose the right CUDA build of torch ..."
+# Stock torch runs on H100/Ampere/etc but NOT on a too-new Blackwell card
+# (sm_120: "no kernel image is available"). PROBE with a tiny GPU op rather than
+# hardcoding a GPU list, and remember which CUDA wheel index to use. We do the
+# actual (re)install AFTER the deps below — because a dep (vocos) silently
+# upgrades torch from default PyPI, which would mismatch torchvision and break
+# the whole ASR/TTS import ("operator torchvision::nms does not exist"). Pinning
+# the matched trio LAST is the only thing that sticks.
 if python3 -c "import torch; assert torch.cuda.is_available(); (torch.randn(8,8,device='cuda')@torch.randn(8,8,device='cuda')).sum().item()" 2>/dev/null; then
-    echo "    Installed torch already runs on this GPU — keeping it."
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/cu124"
+    echo "    Stock torch runs on this GPU (e.g. H100) -> cu124 trio."
 else
-    echo "    Installed torch can't run on this GPU (likely a new Blackwell card) — installing cu128 build ..."
-    # --force-reinstall is mandatory: a plain install sees torch 'already
-    # satisfied' and does nothing. Install the trio together so versions match.
-    pip install --no-cache-dir --force-reinstall \
-        torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+    echo "    Stock torch can't run (new Blackwell card) -> cu128 trio."
 fi
 
-echo ">>> [3/7] Installing the rest of the Python deps ..."
+echo ">>> [3/7] Installing the rest of the Python deps, then pinning a matched torch trio ..."
 pip install --no-cache-dir \
     fastapi uvicorn python-multipart numpy requests \
     transformers==4.56.2 huggingface_hub==0.36.0 cffi sympy soundfile \
     matplotlib librosa cached_path hydra-core omegaconf pydub vocos \
     torchdiffeq x_transformers jieba pypinyin indic_unified_parser
+
+# Pin a MATCHED torch trio from the probed CUDA index, LAST, so the vocos-induced
+# torch upgrade (which mismatches torchvision -> torchvision::nms error) is undone
+# and nothing else can override it. --force-reinstall is required (plain install
+# sees torch 'already satisfied' and skips).
+echo "    pinning matched torch/torchvision/torchaudio from $TORCH_INDEX_URL ..."
+pip install --no-cache-dir --force-reinstall \
+    torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
+# Fail fast if they still don't agree (e.g. index lacked a matched set).
+python3 -c "from transformers import pipeline" || {
+    echo "    !!! torch/torchvision still mismatched — check versions before proceeding."; exit 1; }
 
 echo ">>> [4/7] Re-applying the 4 source patches ..."
 python3 - <<'PY'
