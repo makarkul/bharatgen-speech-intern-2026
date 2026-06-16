@@ -1,20 +1,23 @@
-"""Shrutam-2 + Sooktam-2 speech-to-speech web demo — backend.
+"""Speech-translation voice bot — main backend (ASR + TTS; translation is a service).
 
-The loop:  record audio  ->  Shrutam-2 (speech->text)  ->  Sooktam-2 (text->speech)
-           ->  play the synthesized audio back in the browser.
+The loop:  record audio  ->  Shrutam-2 (speech->text, source lang)
+           ->  translate (Param-2 service over HTTP)  ->  text in target lang
+           ->  Sooktam-2 (text->speech, target lang)  ->  play it back.
 
 ONE endpoint does the whole thing:
-    POST /speak  (audio file + language + voice)  ->  {"text": "...", "audio": "<base64 wav>"}
+    POST /speak  (audio + language + target_language + voice)
+              -> {"text": <source>, "translation": <target>, "audio": <base64 wav>}
 
-Right now BOTH models are STUBS (fake text, fake audio) so the entire
-record -> transcribe -> synthesize -> play loop can be built and tested
-WITHOUT a GPU, on a laptop. The real models plug in at the two spots marked
->>> SWAP HERE <<<  below (done later, on a RunPod GPU pod).
+Two run modes, chosen automatically by whether the model repos exist:
+  * Laptop (no repos)  -> STUB_MODE: fake transcript + beep, and translation is
+    tagged (the Param-2 service isn't running). Lets the whole UI loop be tested
+    on a laptop with NO GPU.
+  * GPU pod (repos present) -> real Shrutam + Sooktam loaded once at import;
+    translation calls the separate Param-2 service (see param_service.py).
 
 Run (stub mode, no GPU):
-    pip install fastapi uvicorn python-multipart
+    pip install fastapi uvicorn python-multipart requests
     uvicorn server:app --reload --port 8000
-
 Then open  http://localhost:8000/  in a browser (see README).
 """
 import base64
@@ -32,7 +35,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-app = FastAPI(title="Shrutam-2 + Sooktam-2 demo")
+app = FastAPI(title="Speech-translation voice bot (Shrutam-2 + Param-2 + Sooktam-2)")
 
 # ---------------------------------------------------------------------------
 # Model loading. The SAME file runs two ways:
@@ -167,14 +170,23 @@ def translate_text(text: str, src_lang: str, tgt_lang: str) -> str:
         return text
     if STUB_MODE:
         return f"[STUB translate {src_lang}->{tgt_lang}] {text}"
-    # Real mode: ask the Param-2 service. Generous timeout — the 17B model is slow,
-    # and a cold first request also pays the one-time model load.
+    # Real mode: ask the Param-2 service. Generous timeout — the 17B model is slow.
+    # (It pre-loads at its own startup, so we shouldn't pay the load here.)
     import requests
-    resp = requests.post(
-        PARAM_URL, json={"text": text, "src": src_lang, "tgt": tgt_lang}, timeout=180,
-    )
-    resp.raise_for_status()
-    return resp.json()["translation"]
+    try:
+        resp = requests.post(
+            PARAM_URL, json={"text": text, "src": src_lang, "tgt": tgt_lang}, timeout=180,
+        )
+        resp.raise_for_status()
+        return resp.json()["translation"]
+    except requests.exceptions.RequestException as e:
+        # Service down/unreachable/slow: give a clear message instead of a raw 500,
+        # so the UI shows something actionable and the cause is obvious in the log.
+        print(f">>> Param-2 service error ({PARAM_URL}): {e}", flush=True)
+        raise RuntimeError(
+            f"Translation service unavailable ({src_lang}->{tgt_lang}). "
+            f"Is param_service running on {PARAM_URL}?"
+        ) from e
 
 
 def synthesize(text: str, voice: str, language: str,
@@ -205,10 +217,11 @@ def synthesize(text: str, voice: str, language: str,
     else:
         v = VOICES[voice]
         # VOICES_DIR is absolute (__file__-based), so Shrutam's os.chdir doesn't
-        # break this path.
-        clone_ref_file, clone_ref_text, cls_language = (
-            str(VOICES_DIR / v["ref_file"]), v["ref_text"], v["language"],
-        )
+        # break this path. cls_language follows the GENERATED text (`language` =
+        # target), NOT the preset clip's language — otherwise translating to e.g.
+        # Tamil with a Hindi preset would tokenize Tamil text as Hindi.
+        clone_ref_file, clone_ref_text = str(VOICES_DIR / v["ref_file"]), v["ref_text"]
+        cls_language = language
 
     # Output is 24 kHz; we encode the float array to WAV bytes.
     wav, sr, _ = _sooktam.infer(

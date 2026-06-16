@@ -21,6 +21,14 @@ Endpoint:
 """
 import re
 
+import os
+
+# Safety net: if HF_HOME isn't already set (e.g. running this standalone for
+# debugging, not via pod_setup.sh), default the ~34GB Param-2 download to the
+# PERSISTENT volume so it isn't wiped on pod stop. Must be set BEFORE importing
+# transformers. pod_setup.sh sets HF_HOME=/workspace/hf_cache and we inherit it.
+os.environ.setdefault("HF_HOME", "/workspace/hf_cache")
+
 import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -59,9 +67,16 @@ def _load():
 
 
 def _strip_thinking(text: str) -> str:
-    """Remove the <think>...</think> reasoning block, keep only the answer."""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL)
+    """Remove the <think>...</think> reasoning block, keep only the answer.
+
+    Handles: a complete <think>...</think> block; leading reasoning up to a
+    stray closing </think>; AND an UNCLOSED/dangling <think> (generation got
+    truncated mid-reasoning) — in that last case we drop from <think> to the end
+    so we never return raw reasoning as if it were the translation.
+    """
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)  # complete block
+    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL)         # leading reasoning
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)           # dangling, unclosed
     return text.strip()
 
 
@@ -85,7 +100,18 @@ def _translate(text: str, src: str, tgt: str) -> str:
     ).to(model.device)
     with torch.no_grad():
         out = model.generate(
-            inputs, max_new_tokens=300, do_sample=False, use_cache=False,
+            inputs,
+            # A "thinking" model spends tokens on <think> reasoning BEFORE the
+            # answer; 300 was too tight (could truncate mid-think). 1024 leaves
+            # room for reasoning + the translation.
+            max_new_tokens=1024,
+            do_sample=False,        # deterministic — the card's advice for reliable output
+            # KV cache ON for usable latency. With cache OFF (as the card's
+            # example showed) a 17B generating ~1k tokens recomputes attention
+            # every step — minutes per call, and it'd blow the server's 180s
+            # timeout. If Param-2's custom modeling ever errors with cache on,
+            # revert this to use_cache=False.
+            use_cache=True,
         )
     generated = out[0][inputs.shape[-1]:]
     raw = tok.decode(generated, skip_special_tokens=False)
@@ -106,6 +132,23 @@ def translate_endpoint(req: TranslateRequest):
 @app.get("/health")
 def health():
     return {"ok": True, "loaded": _model is not None}
+
+
+@app.on_event("startup")
+def _eager_load():
+    """Load Param-2 at startup, NOT on the first request.
+
+    Two reasons: (1) the first /speak would otherwise hang ~a minute while the
+    17B model loads, with no feedback; (2) if loading fails (OOM, version clash,
+    bad weights) we want it screaming in param_service.log at startup — not
+    silently on the first user request. If it can't load, log loudly and let the
+    service stay up so /health reports loaded=false.
+    """
+    try:
+        _load()
+    except Exception as e:
+        print(f">>> !!! Param-2 FAILED to load at startup: {type(e).__name__}: {e}",
+              flush=True)
 
 
 if __name__ == "__main__":

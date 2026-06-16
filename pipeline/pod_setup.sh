@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Full bring-up of the speech-TRANSLATION pipeline on a fresh Blackwell GPU pod
-# (RTX PRO 4500 / sm_120), OR replay after a pod restart. Run from anywhere:
+# Full bring-up of the speech-TRANSLATION pipeline on a fresh GPU pod (built/
+# tested for H100 SXM 80GB; the GPU-probe below also handles Blackwell sm_120),
+# OR replay after a pod restart. Run from anywhere:
 #
 #     bash /workspace/bharatgen-speech-intern-2026/pipeline/pod_setup.sh
 #
@@ -22,15 +23,21 @@
 #      duplicate copy that doubles disk use), then re-fetch the two big files via
 #      hf_hub_download and verify exact byte sizes (git-lfs silently truncated
 #      them last time).
-#   1. Blackwell (sm_120) needs cu128 torch — the template's cu124 torch has no
-#      kernels for this GPU. --force-reinstall is required (plain install skips).
+#   1. The GPU is PROBED: keep stock torch if it runs (H100/Hopper does), else
+#      install cu128 torch (a too-new Blackwell sm_120 card needs it).
 #   2. torchaudio 2.11 dropped built-in .load() -> we patch both models to use
 #      soundfile instead (avoids the torchcodec/libnvrtc rabbit hole).
 #   3. Shrutam mmap + Sooktam robotic-head patches (as before).
 #   4. Extra deps Sooktam imports at module top: matplotlib, librosa, ffmpeg.
 set -e
 
-export HF_HOME=/root/hf_cache
+# HF_HOME MUST live on the persistent volume (/workspace), NOT /root. Param-2's
+# ~34GB weights download into this cache on first load — if it were on /root
+# (ephemeral disk), it'd be WIPED on every pod stop and re-downloaded each time,
+# defeating the whole point of the network volume. On /workspace it downloads
+# ONCE and persists. (The old pod used /root to split two disks; with a single
+# persistent volume, everything goes on /workspace.)
+export HF_HOME=/workspace/hf_cache
 export SHRUTAM_DIR=/workspace/models/Shrutam-2
 export SOOKTAM_DIR=/workspace/models/sooktam2
 
@@ -43,9 +50,9 @@ SOOKTAM_PT="$SOOKTAM_DIR/model_1250000.pt";      SOOKTAM_PT_BYTES=5377795177
 file_ok() { [ -f "$1" ] && [ "$(stat -c%s "$1" 2>/dev/null)" = "$2" ]; }
 
 if file_ok "$SHRUTAM_PT" "$SHRUTAM_PT_BYTES" && file_ok "$SOOKTAM_PT" "$SOOKTAM_PT_BYTES"; then
-    echo ">>> [0/4] Model weights already present and correct size — skipping download."
+    echo ">>> [0/7] Model weights already present and correct size — skipping download."
 else
-    echo ">>> [0/4] Downloading model weights (fresh pod or missing/truncated) ..."
+    echo ">>> [0/7] Downloading model weights (fresh pod or missing/truncated) ..."
     # git-lfs isn't in the pod template; needed so the repos' code (and pointers) clone.
     apt-get update -qq && apt-get install -y -qq git-lfs
     git lfs install
@@ -83,15 +90,15 @@ for repo, fname, dst, want in targets:
     assert got == want, f"SIZE MISMATCH {dst}: got {got}, want {want}"
     print(f"  OK: {dst} ({got} bytes)")
 PY
-    echo ">>> [0/4] Weights ready."
+    echo ">>> [0/7] Weights ready."
 fi
 
-echo ">>> [1/4] Installing ffmpeg (decodes the browser's webm uploads) ..."
+echo ">>> [1/7] Installing ffmpeg (decodes the browser's webm uploads) ..."
 # soundfile can't read the Opus/webm a browser records; ffmpeg transcodes it to
 # WAV in /speak. Also satisfies pydub's ffmpeg lookup.
 apt-get update -qq && apt-get install -y -qq ffmpeg
 
-echo ">>> [2/4] Checking whether the installed torch supports this GPU ..."
+echo ">>> [2/7] Checking whether the installed torch supports this GPU ..."
 # The pod's stock torch works on older GPUs (e.g. RTX 3090 / sm_86) but NOT on a
 # brand-new Blackwell card (RTX PRO 4500 / sm_120) — there it crashes with "no
 # kernel image is available". Rather than hardcode a GPU list, we PROBE: try a
@@ -107,14 +114,14 @@ else
         torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 fi
 
-echo ">>> [2/4] Installing the rest of the Python deps ..."
+echo ">>> [3/7] Installing the rest of the Python deps ..."
 pip install --no-cache-dir \
     fastapi uvicorn python-multipart numpy requests \
     transformers==4.56.2 huggingface_hub==0.36.0 cffi sympy soundfile \
     matplotlib librosa cached_path hydra-core omegaconf pydub vocos \
     torchdiffeq x_transformers jieba pypinyin indic_unified_parser
 
-echo ">>> [3/4] Re-applying the 4 source patches ..."
+echo ">>> [4/7] Re-applying the 4 source patches ..."
 python3 - <<'PY'
 from pathlib import Path
 
@@ -162,7 +169,7 @@ else:
     print("  [D] Sooktam soundfile:", "already present" if "_sf.read(ref_audio" in t else "WARN line not found")
 PY
 
-echo ">>> [4/5] Starting the MAIN server (ASR+TTS) on :8000 ..."
+echo ">>> [5/7] Starting the MAIN server (ASR+TTS) on :8000 ..."
 cd /workspace/bharatgen-speech-intern-2026/pipeline
 export PARAM_URL=http://localhost:8001   # where the main server finds the translator
 # kill any previous instance on 8000
@@ -171,7 +178,7 @@ sleep 1
 nohup uvicorn server:app --host 0.0.0.0 --port 8000 > /workspace/server.log 2>&1 &
 echo ">>> Main server starting (PID $!). ASR/TTS load in ~30-40s."
 
-echo ">>> [5/5] Setting up + starting the PARAM-2 service on :8001 (own venv) ..."
+echo ">>> [6/7] Setting up + starting the PARAM-2 service on :8001 (own venv) ..."
 # Param-2 needs transformers==4.52.3, which clashes with the main stack's 4.56.2.
 # So it lives in its own venv. We create it once (idempotent) on /workspace so it
 # survives restarts. The 17B weights download into HF_HOME on first model load.
@@ -194,8 +201,29 @@ fuser -k 8001/tcp 2>/dev/null || true
 sleep 1
 nohup "$PARAM_VENV/bin/uvicorn" param_service:app --host 0.0.0.0 --port 8001 \
     > /workspace/param_service.log 2>&1 &
-echo ">>> Param-2 service starting (PID $!). The 17B model loads on first request."
+echo ">>> Param-2 service starting (PID $!). It PRE-LOADS the 17B model at startup,"
+echo "    so it takes a while before /health reports loaded=true (or fails loudly)."
+echo ""
+echo ">>> [7/7] Waiting for the Param-2 service to finish loading the model ..."
+# Poll /health until the model loads, fails, or we give up. This turns "did it
+# even come up?" from a log-reading chore into a clear PASS/FAIL line.
+PARAM_OK=0
+for i in $(seq 1 60); do          # up to ~10 min (17B load + first-time weight download)
+    H=$(curl -s http://localhost:8001/health 2>/dev/null || true)
+    case "$H" in
+        *'"loaded":true'*)  PARAM_OK=1; break ;;
+    esac
+    sleep 10
+done
+if [ "$PARAM_OK" = 1 ]; then
+    echo "    PASS — Param-2 loaded; translation is live."
+else
+    echo "    WARN — Param-2 not loaded after waiting. Check /workspace/param_service.log"
+    echo "           (likely causes: OOM with all 3 models, transformers 4.52.3 clash, or"
+    echo "            still downloading the 17B weights). The ASR/TTS server still runs;"
+    echo "            same-language requests work, cross-language will error until this loads."
+fi
 echo ""
 echo ">>> Watch:   tail -f /workspace/server.log /workspace/param_service.log"
 echo ">>> Main ready when you see: 'Uvicorn running on http://0.0.0.0:8000'"
-echo ">>> NOTE: expose BOTH ports 8000 (and 8001 only if testing the translator directly)."
+echo ">>> NOTE: expose port 8000 (and 8001 only if testing the translator directly)."
