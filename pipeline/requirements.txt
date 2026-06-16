@@ -1,0 +1,39 @@
+# Pod-side dependencies for the speech-to-speech backend (Shrutam-2 + Sooktam-2).
+# Installed on the RunPod pod by setup.sh — NOT on the laptop (the laptop only
+# runs the stub server, which needs just the web framework below).
+#
+# torch is intentionally NOT pinned here: the RunPod PyTorch template ships a
+# CUDA-matched torch already. Installing our own could mismatch the pod's CUDA.
+# Let the template's torch stand; everything below layers on top of it.
+
+# --- web framework (same as the laptop stub) ---
+fastapi
+uvicorn
+python-multipart
+
+# used by server.py to encode Sooktam's audio array to WAV (torch pulls it in
+# anyway, but pin it explicitly so the encode path never has a missing import)
+numpy
+
+# --- Shrutam-2 (ASR). Pins are from the model repo's own requirements.txt. ---
+# transformers is pinned strict by Shrutam; Sooktam (an F5-TTS fork) runs on top
+# of this same version. If Sooktam breaks under 4.56.2 at runtime, that's the
+# signal to split the two models into separate processes (see README).
+transformers==4.56.2
+huggingface_hub==0.36.0
+pyyaml
+cffi==2.0.0
+soundfile==0.13.1
+sympy==1.14.0
+
+# --- Sooktam-2 (TTS). F5-TTS fork; deps derived in Week 4 (no repo requirements). ---
+cached_path
+hydra-core
+omegaconf
+pydub
+vocos
+torchdiffeq
+x_transformers
+jieba
+pypinyin
+indic_unified_parser
