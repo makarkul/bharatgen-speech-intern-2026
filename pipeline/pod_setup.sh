@@ -56,6 +56,10 @@ else
     # git-lfs isn't in the pod template; needed so the repos' code (and pointers) clone.
     apt-get update -qq && apt-get install -y -qq git-lfs
     git lfs install
+    # huggingface_hub is needed RIGHT HERE for the integrity-checked re-fetch below
+    # (git-lfs silently truncates the big checkpoints). The full deps install runs
+    # later in [3/7], but this step can't wait for it — install it up front.
+    python3 -m pip install --no-cache-dir huggingface_hub
 
     mkdir -p /workspace/models
     cd /workspace/models
