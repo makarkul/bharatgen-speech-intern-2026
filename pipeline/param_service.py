@@ -77,6 +77,10 @@ def _strip_thinking(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)  # complete block
     text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL)         # leading reasoning
     text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)           # dangling, unclosed
+    # Strip leftover chat/end special tokens (e.g. <|im_end|>, <<|EOS|>>,
+    # <|endoftext|>) — we decode with skip_special_tokens=False to see <think>,
+    # so these survive and would otherwise be SPOKEN by the TTS.
+    text = re.sub(r"<+\|[^<>]*\|>+", "", text)
     return text.strip()
 
 
