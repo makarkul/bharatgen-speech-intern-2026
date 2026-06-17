@@ -195,12 +195,8 @@
       </div>
     </div>
 
+    <!-- The reply voice is chosen automatically to match the target language. -->
     <div class="controls">
-      <!-- Voice to speak the result in. Filled at load time from GET /voices. -->
-      <div class="lang-field" style="flex: 0 0 auto;">
-        <label for="voice">Voice</label>
-        <select id="voice" title="Voice to synthesize the reply in"></select>
-      </div>
       <button class="mic-btn" id="micBtn">
         <span class="dot"></span>
         <span id="micLabel">Start recording</span>
@@ -222,11 +218,11 @@
   </div>
 
   <script>
-    // Where the backend lives. Same machine for now; for RunPod, change this to
-    // the pod's proxy URL, e.g. "https://<pod-id>-8000.proxy.runpod.net".
-    const API_BASE = "http://localhost:8000";
+    // Empty = same origin as the page. Since the backend serves this page, the
+    // browser calls /speak on whatever host served the page (localhost in stub
+    // mode, the RunPod proxy URL on the pod) — no hardcoded URL needed.
+    const API_BASE = "";
     const SPEAK_URL = API_BASE + "/speak";
-    const VOICES_URL = API_BASE + "/voices";
 
     const micBtn = document.getElementById("micBtn");
     const micLabel = document.getElementById("micLabel");
@@ -235,7 +231,6 @@
     const translationEl = document.getElementById("translation");
     const languageEl = document.getElementById("language");
     const targetLanguageEl = document.getElementById("targetLanguage");
-    const voiceEl = document.getElementById("voice");
     const audioWrap = document.getElementById("audioWrap");
     const player = document.getElementById("player");
 
@@ -250,25 +245,6 @@
       el.textContent = text;
       el.classList.toggle("placeholder", isPlaceholder);
     }
-
-    // Populate the voice picker from the backend, so the page and server never
-    // disagree on what voices exist.
-    async function loadVoices() {
-      try {
-        const res = await fetch(VOICES_URL);
-        const voices = await res.json();
-        voiceEl.innerHTML = "";
-        for (const [key, v] of Object.entries(voices)) {
-          const opt = document.createElement("option");
-          opt.value = key;
-          opt.textContent = v.label || key;
-          voiceEl.appendChild(opt);
-        }
-      } catch (err) {
-        setStatus("Could not load voices: " + err.message + " (is the backend running?)");
-      }
-    }
-    loadVoices();
 
     // Decode the base64 WAV the server returns and hand it to the <audio> player.
     function playAudio(base64Wav) {
@@ -328,12 +304,17 @@
         form.append("audio", blob, "recording.webm");
         form.append("language", languageEl.value);
         form.append("target_language", targetLanguageEl.value);
-        form.append("voice", voiceEl.value);
 
         const res = await fetch(SPEAK_URL, { method: "POST", body: form });
         if (!res.ok) throw new Error("Server returned " + res.status);
 
         const data = await res.json();
+        if (data.error) {                       // server-side guard (e.g. unsupported target)
+          setStatus("Error: " + data.error);
+          setBox(outputEl, "—", true);
+          setBox(translationEl, "—", true);
+          return;
+        }
         setBox(outputEl, data.text || "(empty response)");
         // translation may equal text when source == target (no translation).
         setBox(translationEl, data.translation || data.text || "(empty response)");

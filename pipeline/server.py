@@ -117,30 +117,43 @@ PROMPTS = {
     "punjabi":   "Transcribe speech to Punjabi text.",
 }
 
-# Sooktam-2 is a VOICE-CLONING TTS: to synthesize, it needs a short reference
-# clip + that clip's transcript, and it speaks the new text in that voice. So we
-# ship a few preset voices. These are clean 16kHz mono Hindi clips (~9s each)
-# from the tts_refs benchmark set, with their verified transcripts. The frontend
-# reads this dict (via GET /voices) to populate its voice picker.
+# Sooktam-2 is a VOICE-CLONING TTS: it clones a reference clip's voice/accent and
+# speaks the new text in it. Cloning a HINDI reference while generating (say) Tamil
+# sounds off — a Hindi speaker's accent on Tamil. So we keep ONE reference clip PER
+# LANGUAGE and pick the one matching the TARGET (output) language, so the accent
+# matches the text. Clips are clean ~9s native recordings (tts_refs benchmark set),
+# each paired with its EXACT transcript (must match the audio or cloning degrades).
 #
-# ref_file paths are resolved relative to THIS file's folder (VOICES_DIR below),
-# so the server works no matter what directory uvicorn is launched from.
+# Only 3 languages have native clips so far (hindi, marathi, tamil). The other 9
+# Shrutam languages fall back to the Hindi clip (functional, just Hindi-accented)
+# until native clips are added — drop a ref_<lang>.wav + transcript here to upgrade.
+#
+# ref paths resolve relative to THIS file's folder, so cwd (Shrutam's os.chdir)
+# doesn't matter.
 VOICES_DIR = Path(__file__).parent / "voices"
 
-VOICES = {
-    "voice_a": {
-        "label": "Voice A",
-        "ref_file": "voice_a.wav",
-        "ref_text": "मन की बात कार्यक्रम आकाशवाणी द्रदर्शन समाचार प्रधानमंत्री कार्यालय तथा सूचना और प्रसारण मंत्रालय के यूट्यूब चैनलों पर भी सीधा प्रसारित होगा",
-        "language": "hindi",   # language the reference clip is spoken in
+LANG_VOICES = {
+    "hindi": {
+        "ref_file": "ref_hindi.wav",
+        "ref_text": "इस बीच कल शिमला से वीडियो कांफ्रेसिंग के माध्यम से संगठनात्मक जिला नूरपुर के अन्य पिछड़ा वर्ग मोर्चा की वर्घुअल रैली को भी मुख्यमंत्री ने संबोधित किया",
     },
-    "voice_b": {
-        "label": "Voice B",
-        "ref_file": "voice_b.wav",
-        "ref_text": "आकाशवाणी से मैच का आंखों देखा हाल ढाई बजे से राजधानी और एम रेनबो तथा डीटीएच हिंदी पर उपलब्ध रहेगा",
-        "language": "hindi",
+    "marathi": {
+        "ref_file": "ref_marathi.wav",
+        "ref_text": "हे चक्रीवादळ ज्या ठिकाणांडून जाणार आहे त्या सर्व ठिकाणी अन्न पिण्याचं पाणी औषधं आणि तिर अत्यावशक सुविधा पोचवण्याचे निर्देश केंद्रीय सचीव पी के सिन्हा यांनी संबधित यंत्रणांना दिले आहेत",
+    },
+    "tamil": {
+        "ref_file": "ref_tamil.wav",
+        "ref_text": "உலக ககாதார அமைப்பின் தலைமை இயக்குநர் திரு டெட்ரோஸ் அதானோ கெப்ரீசஸ் வெளியிட்டுள்ள அறிக்கையில் பல நாடுகளில் கொரோனா தொற்று பரவியிருப்பதால் அச்சம் ஏற்பட்டுள்ளதாக தெரிவித்துள்ளார்",
     },
 }
+
+# Languages with no native clip yet fall back to this one's reference.
+VOICE_FALLBACK = "hindi"
+
+
+def _voice_for(language: str) -> dict:
+    """Pick the reference clip whose language matches the target (or fall back)."""
+    return LANG_VOICES.get(language, LANG_VOICES[VOICE_FALLBACK])
 
 
 def transcribe(wav_path: str, language: str) -> str:
@@ -189,47 +202,27 @@ def translate_text(text: str, src_lang: str, tgt_lang: str) -> str:
         ) from e
 
 
-def synthesize(text: str, voice: str, language: str,
-               ref_file: str | None = None, ref_text: str | None = None,
-               ref_language: str | None = None) -> bytes:
+def synthesize(text: str, language: str) -> bytes:
     """Turn `text` into speech (Sooktam-2). Returns WAV bytes.
 
-    `text` is the text to SPEAK and `language` is ITS language — i.e. the target
-    language of the pipeline. cls_language follows `text`, not the reference clip.
-
-    Sooktam clones a reference voice. Normally that's a preset (VOICES[voice]).
-    But if ref_file + ref_text are passed (the "use my own voice" mode), we clone
-    those instead — the caller hands us the user's own recording + its transcript.
-    With translation on, the reference clip may be in a DIFFERENT language than
-    `text` (you spoke Hindi, we speak Tamil back in your voice); `ref_language`
-    just documents the clip's language — Sooktam reads `ref_text` directly and
-    tokenizes the generated `text` with cls_language=`language`.
+    `text` is the text to SPEAK and `language` is ITS language (the pipeline's
+    TARGET language). We pick the reference clip for that language so the voice's
+    accent matches the text, and set cls_language to it. Falls back to the Hindi
+    clip for languages without a native reference yet.
     """
     if STUB_MODE:
         # Fake beep so the browser's audio path is testable without a GPU.
         return _fake_beep_wav(duration_s=0.6, freq_hz=440, sample_rate=16000)
 
-    if ref_file is not None:
-        # "Use my voice": clone the user's own clip. cls_language follows `text`
-        # (the language we GENERATE), which may differ from the reference clip's
-        # language when translation is on — that's fine, ref_text matches the clip.
-        clone_ref_file, clone_ref_text, cls_language = ref_file, ref_text or "", language
-    else:
-        v = VOICES[voice]
-        # VOICES_DIR is absolute (__file__-based), so Shrutam's os.chdir doesn't
-        # break this path. cls_language follows the GENERATED text (`language` =
-        # target), NOT the preset clip's language — otherwise translating to e.g.
-        # Tamil with a Hindi preset would tokenize Tamil text as Hindi.
-        clone_ref_file, clone_ref_text = str(VOICES_DIR / v["ref_file"]), v["ref_text"]
-        cls_language = language
-
-    # Output is 24 kHz; we encode the float array to WAV bytes.
+    v = _voice_for(language)
+    # VOICES_DIR is absolute (__file__-based), so Shrutam's os.chdir doesn't break
+    # this path. cls_language follows the GENERATED text's language (= `language`).
     wav, sr, _ = _sooktam.infer(
-        ref_file=clone_ref_file,
-        ref_text=clone_ref_text,
+        ref_file=str(VOICES_DIR / v["ref_file"]),
+        ref_text=v["ref_text"],
         gen_text=text,
         tokenizer="cls",
-        cls_language=cls_language,
+        cls_language=language,
     )
     return _wav_to_bytes(wav, sr)
 
@@ -290,13 +283,13 @@ async def speak_endpoint(
     audio: UploadFile = File(...),
     language: str = Form("hindi"),
     target_language: str = Form(""),
-    voice: str = Form("voice_a"),
 ):
     """The full loop: audio -> transcribe -> translate -> synthesize -> return all.
 
     `language` is the SPOKEN (source) language; `target_language` is what to
     translate to and speak back. If target_language is empty or equals language,
-    it's the old same-language behavior (no translation).
+    it's same-language behavior (no translation). The output voice is chosen
+    automatically to match the target language (see _voice_for).
 
     Returns {"text": <source transcript>, "translation": <target text>,
     "audio": <base64 WAV>}. We base64 the audio so text + audio fit in one JSON
@@ -326,17 +319,9 @@ async def speak_endpoint(
         _to_wav_16k_mono(raw_path, wav_path)            # step 0: any format -> 16k mono WAV
         text = transcribe(wav_path, language)           # step 1: speech -> text (source lang)
         translation = translate_text(text, language, tgt)  # step 2: source -> target text
-        # step 3: synthesize the TRANSLATED text, in the TARGET language.
-        if voice == "mine":
-            # "Use my voice": clone the user's own recording. The reference clip
-            # is their SOURCE-language audio, so its transcript is `text` (source),
-            # NOT the translation — the ref_text must match the ref audio. Sooktam
-            # then speaks the target-language `translation` in that cloned voice.
-            wav_bytes = synthesize(translation, voice, tgt,
-                                   ref_file=wav_path, ref_text=text,
-                                   ref_language=language)
-        else:
-            wav_bytes = synthesize(translation, voice, tgt)   # preset voice
+        # step 3: synthesize the TRANSLATED text, in the TARGET language (the voice
+        # is auto-picked to match tgt inside synthesize()).
+        wav_bytes = synthesize(translation, tgt)
     finally:
         Path(raw_path).unlink(missing_ok=True)
         Path(wav_path).unlink(missing_ok=True)
@@ -346,15 +331,6 @@ async def speak_endpoint(
         "translation": translation,
         "audio": base64.b64encode(wav_bytes).decode("ascii"),
     }
-
-
-@app.get("/voices")
-async def voices_endpoint():
-    """List the TTS voices for the frontend's picker: the presets plus a special
-    'mine' option that clones whatever the user just recorded."""
-    voices = {key: {"label": v["label"]} for key, v in VOICES.items()}
-    voices["mine"] = {"label": "Use my voice"}
-    return voices
 
 
 @app.get("/")
