@@ -304,6 +304,14 @@ async def speak_endpoint(
     """
     tgt = target_language or language       # empty target -> same language (no translation)
 
+    # Sooktam-2 only speaks Indian languages (the PROMPTS set). English (and any
+    # other non-Indic target) has no Sooktam voice, so guard here rather than let
+    # it crash deep in the TTS. The frontend already only offers these targets.
+    if tgt not in PROMPTS:
+        return {"text": "", "translation": "",
+                "error": f"'{tgt}' is not a supported speech output language "
+                         f"(Sooktam-2 speaks: {', '.join(PROMPTS)})."}
+
     # Browsers record as .webm (Opus), which soundfile can't read. Save the raw
     # upload, then transcode to 16 kHz mono WAV with ffmpeg so the models (which
     # expect WAV via soundfile) can load it. Resampling to 16 kHz also matches
