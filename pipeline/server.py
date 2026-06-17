@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -172,17 +173,22 @@ def transcribe(wav_path: str, language: str) -> str:
     return str(text).strip()
 
 
-def translate_text(text: str, src_lang: str, tgt_lang: str) -> str:
+def translate_text(text: str, src_lang: str, tgt_lang: str) -> tuple[str, float | None]:
     """Translate text from src_lang to tgt_lang (slugs like 'hindi', 'tamil').
 
     Calls the separate Param-2 service over HTTP (see param_service.py). No-op
     when the languages match. In STUB_MODE we tag the text instead of pretending
     — keeps the laptop loop testable without the service running.
+
+    Returns (translation, model_seconds) where model_seconds is the time the
+    Param-2 service reports spending IN the model (None if not available, e.g.
+    same-language no-op or stub). The caller times the whole HTTP call too, so
+    the gap between the two is the network/HTTP overhead.
     """
     if src_lang == tgt_lang:
-        return text
+        return text, None
     if STUB_MODE:
-        return f"[STUB translate {src_lang}->{tgt_lang}] {text}"
+        return f"[STUB translate {src_lang}->{tgt_lang}] {text}", None
     # Real mode: ask the Param-2 service. Generous timeout — the 17B model is slow.
     # (It pre-loads at its own startup, so we shouldn't pay the load here.)
     import requests
@@ -191,7 +197,8 @@ def translate_text(text: str, src_lang: str, tgt_lang: str) -> str:
             PARAM_URL, json={"text": text, "src": src_lang, "tgt": tgt_lang}, timeout=180,
         )
         resp.raise_for_status()
-        return resp.json()["translation"]
+        data = resp.json()
+        return data["translation"], data.get("model_seconds")
     except requests.exceptions.RequestException as e:
         # Service down/unreachable/slow: give a clear message instead of a raw 500,
         # so the UI shows something actionable and the cause is obvious in the log.
@@ -315,21 +322,51 @@ async def speak_endpoint(
         raw_path = tmp.name
     wav_path = raw_path + ".wav"
 
+    # Profiling: time each stage with a wall clock. The 4 stages run one after
+    # another, so total ≈ their sum. We log the breakdown server-side AND return
+    # it in the response so the page can show "what took how long". All seconds.
+    t = {}
     try:
+        t0 = time.perf_counter()
         _to_wav_16k_mono(raw_path, wav_path)            # step 0: any format -> 16k mono WAV
+        t1 = time.perf_counter()
         text = transcribe(wav_path, language)           # step 1: speech -> text (source lang)
-        translation = translate_text(text, language, tgt)  # step 2: source -> target text
+        t2 = time.perf_counter()
+        translation, model_s = translate_text(text, language, tgt)  # step 2: source -> target
+        t3 = time.perf_counter()
         # step 3: synthesize the TRANSLATED text, in the TARGET language (the voice
         # is auto-picked to match tgt inside synthesize()).
         wav_bytes = synthesize(translation, tgt)
+        t4 = time.perf_counter()
     finally:
         Path(raw_path).unlink(missing_ok=True)
         Path(wav_path).unlink(missing_ok=True)
+
+    t = {
+        "ffmpeg_s": round(t1 - t0, 3),
+        "asr_s": round(t2 - t1, 3),
+        "translate_s": round(t3 - t2, 3),     # whole translate step (HTTP + model)
+        "tts_s": round(t4 - t3, 3),
+        "total_s": round(t4 - t0, 3),
+    }
+    # Split translate into model time (reported by the param service) vs the
+    # HTTP/network overhead (the rest). Only present for real cross-language calls.
+    if model_s is not None:
+        t["translate_model_s"] = round(model_s, 3)
+        t["translate_http_s"] = round((t3 - t2) - model_s, 3)
+
+    print(
+        f"[timing] ffmpeg={t['ffmpeg_s']}s asr={t['asr_s']}s "
+        f"translate={t['translate_s']}s (model={t.get('translate_model_s', '-')}s) "
+        f"tts={t['tts_s']}s | total={t['total_s']}s",
+        flush=True,
+    )
 
     return {
         "text": text,
         "translation": translation,
         "audio": base64.b64encode(wav_bytes).decode("ascii"),
+        "timings": t,
     }
 
 

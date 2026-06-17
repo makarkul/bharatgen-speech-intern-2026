@@ -20,6 +20,7 @@ Endpoint:
     GET  /health  -> {"ok": true, "loaded": <bool>}
 """
 import re
+import time
 
 import os
 
@@ -84,9 +85,12 @@ def _strip_thinking(text: str) -> str:
     return text.strip()
 
 
-def _translate(text: str, src: str, tgt: str) -> str:
+def _translate(text: str, src: str, tgt: str) -> tuple[str, float | None]:
+    """Returns (translation, model_seconds). model_seconds is the wall-clock time
+    spent inside model.generate() — the dominant cost for this 17B thinking model.
+    None for the same-language no-op (no generation happened)."""
     if src == tgt:
-        return text
+        return text, None
     if src not in LANG_NAMES or tgt not in LANG_NAMES:
         raise ValueError(f"Unsupported language pair: {src} -> {tgt}")
 
@@ -102,6 +106,7 @@ def _translate(text: str, src: str, tgt: str) -> str:
     inputs = tok.apply_chat_template(
         conversation=conversation, return_tensors="pt", add_generation_prompt=True,
     ).to(model.device)
+    _t0 = time.perf_counter()
     with torch.no_grad():
         out = model.generate(
             inputs,
@@ -117,9 +122,19 @@ def _translate(text: str, src: str, tgt: str) -> str:
             # revert this to use_cache=False.
             use_cache=True,
         )
+    # CUDA kernels are async — sync before stopping the clock so we time the real
+    # compute, not just the kernel-launch queue. No-op on CPU.
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    model_s = time.perf_counter() - _t0
+
     generated = out[0][inputs.shape[-1]:]
+    n_new = int(generated.shape[-1])     # tokens actually generated (thinking + answer)
     raw = tok.decode(generated, skip_special_tokens=False)
-    return _strip_thinking(raw)
+    tps = n_new / model_s if model_s > 0 else 0.0
+    print(f"[param timing] {src}->{tgt}: generated {n_new} tokens in "
+          f"{model_s:.2f}s ({tps:.1f} tok/s)", flush=True)
+    return _strip_thinking(raw), model_s
 
 
 class TranslateRequest(BaseModel):
@@ -130,7 +145,9 @@ class TranslateRequest(BaseModel):
 
 @app.post("/translate")
 def translate_endpoint(req: TranslateRequest):
-    return {"translation": _translate(req.text, req.src, req.tgt)}
+    translation, model_s = _translate(req.text, req.src, req.tgt)
+    # model_seconds lets the main server split this step into model vs HTTP time.
+    return {"translation": translation, "model_seconds": model_s}
 
 
 @app.get("/health")
@@ -159,4 +176,5 @@ if __name__ == "__main__":
     # Tiny self-test (loads the model — only run on the GPU pod).
     for txt, s, t in [("Hello, how are you?", "english", "hindi"),
                       ("मैं ठीक हूँ।", "hindi", "tamil")]:
-        print(f"[{s}->{t}] {txt!r} -> {_translate(txt, s, t)!r}")
+        out, _ = _translate(txt, s, t)
+        print(f"[{s}->{t}] {txt!r} -> {out!r}")
