@@ -125,8 +125,17 @@ def _translate(text: str, src: str, tgt: str) -> tuple[str, float | None]:
 
     _t0 = time.perf_counter()
     # 3. Generate. beam search (num_beams=5) is what the official example uses.
+    # use_cache=False: IndicTrans2's custom modeling_indictrans.py reads the KV
+    # cache as a legacy tuple-of-tuples (`past_key_values[0][0].shape[2]`), but
+    # transformers 4.56.2 passes a Cache object instead -> AttributeError on a
+    # NoneType at generate time. Disabling the cache skips that code path. The
+    # cost is small here (short max_length=256), and it's the minimal fix that
+    # avoids downgrading transformers (which would re-break the toolkit import).
     with torch.no_grad():
-        out = model.generate(**inputs, max_length=256, num_beams=5, num_return_sequences=1)
+        out = model.generate(
+            **inputs, max_length=256, num_beams=5, num_return_sequences=1,
+            use_cache=False,
+        )
     # CUDA kernels are async — sync before stopping the clock (no-op on CPU).
     if torch.cuda.is_available():
         torch.cuda.synchronize()
