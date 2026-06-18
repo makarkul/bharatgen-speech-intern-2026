@@ -76,7 +76,12 @@ fi
 
 echo ">>> [4/4] Starting the IndicTrans2 service on :$PORT ..."
 cd /workspace/bharatgen-speech-intern-2026/pipeline
-fuser -k "$PORT/tcp" 2>/dev/null || true   # kill any stale instance holding the port
+# Kill any stale instance. NOT fuser — it's in psmisc (absent on this pod image;
+# we hit "fuser: command not found"). pkill (procps) is always present. Match the
+# FULL module:app so we never kill the main server or Param-2. `|| true` is
+# required: pkill exits 1 when nothing matches (normal first run) -> set -e abort.
+pkill -f "uvicorn indictrans_service:app" 2>/dev/null || true
+pkill -f "/uvicorn indictrans_service:app" 2>/dev/null || true
 sleep 1
 nohup "$INDIC_VENV/bin/uvicorn" indictrans_service:app --host 0.0.0.0 --port "$PORT" \
     > "$LOG" 2>&1 &
