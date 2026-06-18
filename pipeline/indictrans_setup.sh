@@ -40,13 +40,23 @@ if [ ! -d "$INDIC_VENV" ]; then
     fi
 
     echo ">>> [3/4] Installing IndicTrans2 deps + IndicTransToolkit ..."
+    # PIN transformers==4.56.2 — NOT latest. transformers 5.x removed the old
+    # `transformers.tokenization_utils.PreTrainedTokenizerBase` import path that
+    # IndicTransToolkit still uses -> ImportError at import time. 4.56.2 is the
+    # same version the main ASR/TTS stack already runs (proven good) and is within
+    # the toolkit's recommended transformers>=4.51.
     "$INDIC_VENV/bin/pip" install --no-cache-dir \
-        transformers accelerate sentencepiece fastapi uvicorn pydantic
+        "transformers==4.56.2" accelerate sentencepiece fastapi uvicorn pydantic
     # The toolkit ships the IndicProcessor (preprocess/postprocess) — MANDATORY,
     # the model mistranslates without it. Installed from GitHub (not on PyPI under
     # this name). Needs a C compiler for its Cython bits; pod images have gcc.
     "$INDIC_VENV/bin/pip" install --no-cache-dir \
         "git+https://github.com/VarunGumma/IndicTransToolkit.git"
+
+    # Re-pin transformers AFTER the toolkit install: the toolkit doesn't pin
+    # transformers, so its dependency resolution can quietly pull 5.x back in and
+    # re-break the PreTrainedTokenizerBase import. Snap it back to 4.56.2 last.
+    "$INDIC_VENV/bin/pip" install --no-cache-dir "transformers==4.56.2"
 
     # Fail fast if the install is somehow inconsistent — surfaces problems NOW,
     # not on the first translate request.
