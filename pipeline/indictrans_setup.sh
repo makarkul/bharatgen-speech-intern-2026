@@ -25,19 +25,27 @@ if [ ! -d "$INDIC_VENV" ]; then
     python3 -m venv "$INDIC_VENV"
     "$INDIC_VENV/bin/pip" install --no-cache-dir --upgrade pip
 
-    # GPU probe — same logic as pod_setup.sh. On H100 stock torch runs, so we
-    # keep it; only a too-new Blackwell (sm_120) needs the cu128 wheel. NOTE:
-    # IndicTrans2 does NOT pull vocos, so the old "vocos silently upgrades torch
-    # and breaks torchvision" trap can't fire here — but we still install torch
-    # explicitly and FIRST so nothing downstream surprises us.
-    echo ">>> [2/4] Probing GPU + installing torch ..."
-    if python3 -c "import torch; assert torch.cuda.is_available(); (torch.randn(8,8,device='cuda')@torch.randn(8,8,device='cuda')).sum().item()" 2>/dev/null; then
-        echo "    Stock torch runs on this GPU (e.g. H100) -> default wheel."
-        "$INDIC_VENV/bin/pip" install --no-cache-dir torch
+    # Install torch matching THIS pod's NVIDIA driver. The pod driver is CUDA
+    # 12.8 (12080); the default-PyPI torch is built for a NEWER CUDA than the
+    # driver supports -> torch.cuda.is_available() is False -> the model silently
+    # loads on CPU (~4s/translate instead of sub-second). The cu124 wheel works
+    # on this H100 (it's the SAME index the main ASR/TTS stack uses). We probe in
+    # the VENV's python (not system python3) AFTER installing, then force cu124 if
+    # CUDA didn't come up. NOTE: IndicTrans2 doesn't pull vocos, so the old
+    # vocos/torchvision trap can't fire here.
+    echo ">>> [2/4] Installing torch + verifying it sees the GPU ..."
+    "$INDIC_VENV/bin/pip" install --no-cache-dir torch
+    if "$INDIC_VENV/bin/python" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        echo "    Default torch already sees the GPU."
     else
-        echo "    Stock torch can't run (new Blackwell card) -> cu128 wheel."
-        "$INDIC_VENV/bin/pip" install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+        echo "    Default torch can't init CUDA (driver too old) -> forcing cu124 wheel."
+        "$INDIC_VENV/bin/pip" install --no-cache-dir --force-reinstall \
+            torch --index-url https://download.pytorch.org/whl/cu124
     fi
+    # Fail fast if torch STILL can't see the GPU — better to know now than to
+    # discover it ran the whole comparison on CPU.
+    "$INDIC_VENV/bin/python" -c "import torch; assert torch.cuda.is_available(), 'torch cannot see the GPU after cu124 reinstall'; print('    torch GPU OK:', torch.cuda.get_device_name(0))" || {
+        echo "    !!! torch still CPU-only — translations will be slow. Check the driver/CUDA build."; }
 
     echo ">>> [3/4] Installing IndicTrans2 deps + IndicTransToolkit ..."
     # PIN transformers==4.56.2 — NOT latest. transformers 5.x removed the old
