@@ -10,9 +10,9 @@ over HTTP. The verified ASR/TTS stack stays completely untouched.
 Run this in ITS OWN venv (NOT the main one):
     python -m venv ~/param_venv && source ~/param_venv/bin/activate
     pip install "transformers==4.52.3" torch accelerate fastapi uvicorn
-    uvicorn param_service:app --host 0.0.0.0 --port 8001
+    uvicorn param_service:app --host 0.0.0.0 --port 8500
 
-Then the main server reaches it at http://localhost:8001/translate.
+Then the main server reaches it at http://localhost:8500/translate.
 
 Endpoint:
     POST /translate  {"text": "...", "src": "hindi", "tgt": "tamil"}

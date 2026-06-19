@@ -4,9 +4,13 @@
 #
 #     bash /workspace/bharatgen-speech-intern-2026/pipeline/pod_setup.sh
 #
-# Choose the translator with the TRANSLATOR env var (default: indictrans):
-#     TRANSLATOR=indictrans bash .../pod_setup.sh   # main server -> IndicTrans2 :8501 (fast)
-#     TRANSLATOR=param      bash .../pod_setup.sh   # main server -> Param-2 :8500   (17B, slow)
+# Choose the translator with the TRANSLATOR env var (default: param):
+#     TRANSLATOR=param      bash .../pod_setup.sh   # main server -> Param-2 :8500   (17B) — DEFAULT
+#     TRANSLATOR=indictrans bash .../pod_setup.sh   # main server -> IndicTrans2 :8501 (fast, OPT-IN)
+#
+# Param-2 IS the pipeline's translator. IndicTrans2 is a SEPARATE, opt-in A/B
+# experiment — it lives in its own venv/port/script and only comes up when you
+# explicitly ask for it, so it never affects the default Param-2 pipeline.
 #
 # Services that come up:
 #   * main server :8000  — Shrutam-2 (ASR) + Sooktam-2 (TTS), transformers 4.56.2
@@ -43,9 +47,10 @@ PARAM_VENV=/workspace/param_venv                    # Param-2 translator
 INDIC_VENV=/workspace/indictrans_venv               # IndicTrans2 translator (built by indictrans_setup.sh)
 REPO=/workspace/bharatgen-speech-intern-2026
 
-# Which translator the main server talks to. indictrans (8501) is the fast default;
-# param (8500) is the 17B model. Override with TRANSLATOR=param.
-TRANSLATOR="${TRANSLATOR:-indictrans}"
+# Which translator the main server talks to. param (8500, the 17B model) IS the
+# pipeline's translator and the default. indictrans (8501) is an opt-in A/B
+# alternative. Override with TRANSLATOR=indictrans.
+TRANSLATOR="${TRANSLATOR:-param}"
 
 # [GOTCHA #11] Both translator models are GATED on HuggingFace -> need a token.
 # Source it SOFTLY from /workspace/.hf_token (persists, never committed) so it's
@@ -326,7 +331,9 @@ if [ "$TRANSLATOR" = "param" ]; then
     TRANSLATOR_PORT=8500
 else
     echo ">>> [6/8] IndicTrans2 translator on :8501 (venv $INDIC_VENV) ..."
-    : "${HF_TOKEN:?IndicTrans2 is gated — run: echo 'HF_TOKEN=hf_xxx' > /workspace/.hf_token}"
+    # NOTE: ai4bharat/indictrans2-indic-indic-1B is a PUBLIC model — no HF token
+    # needed (indictrans_service.py loads it tokenless). So, unlike the Param-2
+    # branch, we do NOT guard on HF_TOKEN here.
     if [ ! -f "$INDIC_VENV/.ready" ] && [ ! -x "$INDIC_VENV/bin/uvicorn" ]; then
         # Delegate the full build to the dedicated, already-correct script.
         echo "    indictrans_venv not built — running indictrans_setup.sh ..."
@@ -379,6 +386,6 @@ echo ""
 echo ">>> ============================================================"
 echo ">>> Done. Translator=$TRANSLATOR (port $TRANSLATOR_PORT)."
 echo ">>> Watch:  tail -f /workspace/server.log /workspace/translator.log"
-echo ">>> Switch translator: re-run with TRANSLATOR=param (or =indictrans)."
+echo ">>> Default translator is Param-2. Opt into the A/B alternative with TRANSLATOR=indictrans."
 echo ">>> Expose port 8000 in the RunPod UI to reach the web app."
 echo ">>> ============================================================"
