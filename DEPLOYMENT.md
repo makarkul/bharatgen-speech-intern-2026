@@ -239,12 +239,21 @@ It is heavily commented inline (search it for `[GOTCHA #N]`), but here's the map
    "no kernel image" / silent CPU fallback.)*
 
 6. **`[3/8]` Builds the MAIN venv** at `/workspace/main_venv` (transformers
-   `4.56.2` + all ASR/TTS deps), installing the **matched torch trio LAST**.
-   *(Why last: `vocos` (a TTS dep) silently upgrades torch from PyPI and
-   mismatches torchvision → "operator torchvision::nms does not exist" → the
-   import dies. Installing torch/vision/audio together at the end overrides that.
-   A `.ready` sentinel + an import "canary" make the ~10-min build skippable on
-   restart while self-healing a half-built venv.)*
+   `4.56.2` + all ASR/TTS deps), then **force-reinstalls the matched cu124 torch
+   trio (torch + torchvision + torchaudio) LAST**.
+   *(Why force-reinstall, and why last: `vocos` (a TTS dep) silently drags
+   torch/torchvision/torchaudio in from PyPI. Two ways that bites: (1) a
+   mismatched **torchvision** → "operator torchvision::nms does not exist"; and
+   (2) a PyPI-nightly **torchaudio** built for the wrong CUDA → it wants
+   `libcudart.so.13`, which a cu124 pod doesn't have, so `import torchaudio`
+   dies with `OSError: libcudart.so.13: cannot open shared object file` and the
+   main server crashes at startup. `--force-reinstall` of the matched cu124 trio
+   at the end overwrites whatever PyPI left. A `.ready` sentinel + an import
+   "canary" (which imports `torchvision.ops` AND `torchaudio` to catch both
+   failures here, not at server start) make the ~10-min build skippable on
+   restart. There's also a **torchaudio self-heal**: if the canary's `import
+   torchaudio` fails on an existing venv, the script force-reinstalls just
+   torchaudio in place — recovering in seconds instead of a full rebuild.)*
 
 7. **`[4/8]` Applies 4 source patches** to the model repos (idempotent):
    - **A** — Shrutam `torch.load(..., mmap=True)` so staging the 5GB checkpoint
@@ -491,7 +500,8 @@ exit with "No clips found":
 | `uvicorn: command not found` / dead `:8000` after restart | Old failure mode (bare install into ephemeral python). The current `pod_setup.sh` uses `/workspace/main_venv` — make sure you're running the committed version. |
 | Param-2 `loaded:false` / 401 on download | HF token missing/invalid, or you didn't click "Agree and access" on the Param-2 model page. Fix `/workspace/.hf_token` (step 4) and accept the gate (step 1). |
 | **Param-2 OOM** | You're on a GPU smaller than ~40GB. Param-2 (17B) needs a big GPU — use **H100 80GB**. |
-| `operator torchvision::nms does not exist` | torch/torchvision mismatch (vocos dragged in a bad torch). `pod_setup.sh` installs the matched trio LAST and has an import canary; if you see this, delete `/workspace/main_venv/.ready` and re-run to rebuild. |
+| `operator torchvision::nms does not exist` | torch/torchvision mismatch (vocos dragged in a bad torch). `pod_setup.sh` force-reinstalls the matched cu124 trio LAST and has an import canary; if you see this, delete `/workspace/main_venv/.ready` and re-run to rebuild. |
+| `OSError: libcudart.so.13: cannot open shared object file` (main server "died during load") | A PyPI-nightly **torchaudio** built for CUDA 13 landed in `main_venv`, but a cu124 pod has no `libcudart.so.13`. `pod_setup.sh` force-reinstalls the cu124 torchaudio and self-heals on re-run; just **re-run `pod_setup.sh`** (the self-heal fixes it in seconds, no full rebuild). |
 | Weights truncated / size mismatch | No git-lfs → silent truncation. `pod_setup.sh` re-fetches via `hf_hub_download` and asserts exact byte sizes; re-run it. |
 | `fuser: command not found` | `psmisc` is ephemeral. The scripts use `pkill` (always present) instead — you shouldn't hit this with the current scripts. |
 | `/speak` fails decoding the recording | ffmpeg missing (it transcodes the browser's WebM/Opus). `pod_setup.sh` verifies ffmpeg is installed; re-run it. |
