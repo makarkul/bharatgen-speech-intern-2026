@@ -164,7 +164,11 @@ fi
 # pattern that's proven on this pod). $1 = venv path.
 build_venv_torch() {
     local venv="$1"
-    "$venv/bin/pip" install --no-cache-dir torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
+    # [GOTCHA #15] vocos (installed earlier without --index-url) drags torchaudio in from
+    # PyPI.  New PyTorch nightly torchaudio on PyPI links against libcudart.so.13 which is
+    # absent on cu124 pods.  --force-reinstall guarantees we overwrite any PyPI-sourced
+    # torchaudio with the correct CUDA-matched build from the index.
+    "$venv/bin/pip" install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
     if ! "$venv/bin/python" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         echo "    torch can't see the GPU from $venv — forcing cu124 ..."
         "$venv/bin/pip" install --no-cache-dir --force-reinstall \
@@ -204,13 +208,24 @@ else
     touch "$MAIN_READY"                      # mark clean ONLY after the trio is in
     echo "    main_venv built."
 fi
+# [GOTCHA #15 self-heal] torchaudio may be a PyPI nightly (e.g. 2.11.0) that links
+# against libcudart.so.13, which is absent on cu124 pods.  Detect and fix in-place
+# before running the canary — much faster than a full venv rebuild.
+if ! "$MAIN_VENV/bin/python" -c "import torchaudio" 2>/dev/null; then
+    echo "    torchaudio import failed (wrong CUDA build from PyPI) — force-reinstalling from $TORCH_INDEX_URL ..."
+    "$MAIN_VENV/bin/pip" install --no-cache-dir --force-reinstall \
+        torchaudio --index-url "$TORCH_INDEX_URL" \
+        || { echo "    !!! torchaudio reinstall failed"; rm -f "$MAIN_READY"; exit 1; }
+fi
+
 # [GOTCHA #2] Import canary on EVERY path (build AND skip). `from transformers
 # import pipeline` ALONE has historically passed even when torchvision::nms is
 # unregistered (it resolves lazily), so we also `import torchvision.ops` to force
 # the op to register here, where we can fail fast and self-heal, instead of at the
-# server's import (a confusing downstream crash). If it fails, drop .ready so the
-# next run rebuilds.
-"$MAIN_VENV/bin/python" -c "from transformers import pipeline; import torchvision.ops; import torch; assert torch.cuda.is_available()" \
+# server's import (a confusing downstream crash). torchaudio is also tested so a
+# wrong-CUDA build is caught here rather than at uvicorn startup. If it fails, drop
+# .ready so the next run rebuilds.
+"$MAIN_VENV/bin/python" -c "from transformers import pipeline; import torchvision.ops; import torchaudio; import torch; assert torch.cuda.is_available()" \
     || { echo "    !!! main_venv broken (trio mismatch / no GPU). Removing .ready — rerun to rebuild."; rm -f "$MAIN_READY"; exit 1; }
 echo "    main_venv import canary OK."
 
@@ -229,10 +244,11 @@ import sys
 fail = []
 
 # Patch A: Shrutam mmap (avoid system-RAM OOM staging the 5GB checkpoint)
+# Variable is ckpt_path (lowercase) in the actual file — not CKPT_PATH.
 f = Path("/workspace/models/Shrutam-2/inference_script.py"); t = f.read_text()
-n = 'torch.load(CKPT_PATH, map_location="cpu")'
+n = 'torch.load(ckpt_path, map_location="cpu")'
 if n in t and "mmap=True" not in t:
-    f.write_text(t.replace(n, 'torch.load(CKPT_PATH, map_location="cpu", mmap=True)'))
+    f.write_text(t.replace(n, 'torch.load(ckpt_path, map_location="cpu", mmap=True)'))
     print("  [A] Shrutam mmap applied")
 else:
     print("  [A] Shrutam mmap:", "already present" if "mmap=True" in t else "WARN line not found")
