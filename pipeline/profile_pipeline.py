@@ -1,7 +1,7 @@
 """Batch profiler for the speech-translation pipeline — produces a report for review.
 
 Sends a FIXED corpus of benchmark clips through the LIVE /speak endpoint (so it
-profiles the REAL path: ffmpeg transcode -> Shrutam ASR -> Param-2 translate
+profiles the REAL path: ffmpeg transcode -> Shrutam ASR -> translate (Param-2 OR IndicTrans2)
 -> Sooktam TTS, including HTTP), collects the per-stage `timings` the server
 returns, and writes:
 
@@ -15,14 +15,21 @@ bypassed. WHY a fixed corpus: reproducible (re-runnable, same clips) and varied
 (short/long clips, multiple language pairs), so the numbers are representative
 rather than cherry-picked.
 
-Run ON THE POD, with both services already up (server :8000 + param :8500):
-    python pipeline/profile_pipeline.py
+Run ON THE POD, with both services already up (server :8000 + a translator):
+    # Param-2 backend (server launched with TRANSLATOR=param):
+    python pipeline/profile_pipeline.py --translator param
+    # IndicTrans2 backend (server launched with TRANSLATOR=indictrans):
+    python pipeline/profile_pipeline.py --translator indictrans \
+        --out pipeline/profiling_results_indictrans
 
 Optional flags:
-    --server   URL of the main server      (default http://localhost:8000)
-    --data     benchmark dataset root       (default ~/datasets)
-    --out      output directory             (default pipeline/profiling_results)
-    --limit    max clips per source language (for a quick smoke run)
+    --server      URL of the main server      (default http://localhost:8000)
+    --data        benchmark dataset root       (default ~/datasets)
+    --out         output directory             (default pipeline/profiling_results)
+    --limit       max clips per source language (for a quick smoke run)
+    --translator  which backend the server runs: param | indictrans (default param).
+                  MUST match how the server was launched — it only sets the report
+                  labels; the profiler can't auto-detect which translator it hit.
 """
 import argparse
 import csv
@@ -49,6 +56,25 @@ MATRIX = {
     "tamil": ["hindi", "tamil"],              # last one = same-language control
 }
 
+# Which translator the pipeline was running for this profile. The profiler talks
+# to the main server (:8000), which can be pointed at EITHER backend, so it can't
+# tell which one it hit — you pass --translator to say so, and every label in the
+# report/environment.json follows from here. Pick the one matching how the server
+# was launched (TRANSLATOR=param|indictrans in pod_setup.sh). This is what keeps a
+# report honest: get it wrong and the numbers are right but the name is a lie.
+TRANSLATORS = {
+    "param": {
+        "label": "Param-2",
+        "model": "bharatgenai/Param2-17B-A2.4B-Thinking",
+        "venv_note": "the Param-2 service runs transformers 4.52.3 in its own venv",
+    },
+    "indictrans": {
+        "label": "IndicTrans2",
+        "model": "ai4bharat/indictrans2-indic-indic-1B",
+        "venv_note": "the IndicTrans2 service runs transformers 4.56.2 in its own venv",
+    },
+}
+
 
 def discover_clips(data_root: Path, limit: int | None):
     """Yield (clip_path, source_language, duration_s) for every corpus clip."""
@@ -73,7 +99,7 @@ def discover_clips(data_root: Path, limit: int | None):
     return clips
 
 
-def collect_env(server_url: str) -> dict:
+def collect_env(server_url: str, tr: dict) -> dict:
     """Capture environment metadata so the numbers are falsifiable/reproducible."""
     def _run(cmd):
         try:
@@ -100,7 +126,8 @@ def collect_env(server_url: str) -> dict:
         "server_url": server_url,
         "asr_model": "bharatgenai/Shrutam-2",
         "tts_model": "bharatgenai/sooktam2",
-        "translate_model": "bharatgenai/Param2-17B-A2.4B-Thinking",
+        "translate_model": tr["model"],
+        "translator_label": tr["label"],
     }
 
 
@@ -168,7 +195,7 @@ def summarize(rows, predicate=None):
     return out
 
 
-def md_stage_table(summary) -> str:
+def md_stage_table(summary, translate_label: str = "Translate") -> str:
     """One summary block -> a markdown table with a % of total column."""
     total_med = summary["total_s"]["median"] or 0
     lines = [
@@ -178,7 +205,7 @@ def md_stage_table(summary) -> str:
         "|---|---|---|---|---|",
     ]
     labels = {"ffmpeg_s": "Transcode (ffmpeg)", "asr_s": "ASR (Shrutam-2)",
-              "translate_s": "Translate (Param-2)", "tts_s": "TTS (Sooktam-2)",
+              "translate_s": f"Translate ({translate_label})", "tts_s": "TTS (Sooktam-2)",
               "total_s": "**TOTAL**"}
     for stage in STAGES:
         s = summary[stage]
@@ -191,9 +218,10 @@ def md_stage_table(summary) -> str:
     return "\n".join(lines)
 
 
-def build_report(env, rows, cold_row, out_dir: Path):
+def build_report(env, rows, cold_row, out_dir: Path, tr: dict):
+    label = tr["label"]
     L = []
-    L.append("# Speech-Translation Pipeline — Latency Profile\n")
+    L.append(f"# Speech-Translation Pipeline — Latency Profile ({label} translator)\n")
     L.append(f"Generated: **{env['date_utc']}**  ·  commit `{env['git_commit']}`\n")
 
     L.append("## Environment\n")
@@ -206,7 +234,7 @@ def build_report(env, rows, cold_row, out_dir: Path):
     L.append(f"| Translate model | `{env['translate_model']}` |")
     L.append(f"| TTS model | `{env['tts_model']}` |")
     L.append(f"| transformers (main server) | {env['transformers_main_server']} "
-             "(Param-2 service runs 4.52.3 in its own venv) |")
+             f"({tr['venv_note']}) |")
     L.append("")
 
     L.append("## How to read this\n")
@@ -214,7 +242,7 @@ def build_report(env, rows, cold_row, out_dir: Path):
              "their sum. Each clip from the benchmark corpus "
              "(`datasets/shrutilipi/{hindi,tamil}`) was POSTed through the live "
              "`/speak` endpoint, so these are real end-to-end request times "
-             "(including the HTTP hop to the Param-2 translate service), not "
+             f"(including the HTTP hop to the {label} translate service), not "
              "isolated micro-benchmarks. We report **median** (typical) and "
              "**p90 / max** (worst-case, which matters for a live demo) rather "
              "than a mean, because a single slow run shouldn't define the story.\n")
@@ -236,19 +264,19 @@ def build_report(env, rows, cold_row, out_dir: Path):
 
     L.append("## Summary — all warm runs\n")
     all_summary = summarize(rows)
-    L.append(md_stage_table(all_summary))
+    L.append(md_stage_table(all_summary, label))
     L.append("")
 
     # The control: same-language runs (translate is a no-op) vs cross-language.
     L.append("## Cross-language vs same-language (the cost translation adds)\n")
     L.append("Same-language runs skip translation (it's a no-op), so comparing "
-             "them to cross-language runs isolates how much the Param-2 step "
+             f"them to cross-language runs isolates how much the {label} step "
              "actually costs.\n")
     L.append("### Cross-language runs (translate active)\n")
-    L.append(md_stage_table(summarize(rows, lambda r: not r["same_lang"])))
+    L.append(md_stage_table(summarize(rows, lambda r: not r["same_lang"]), label))
     L.append("")
     L.append("### Same-language runs (translate skipped — control)\n")
-    L.append(md_stage_table(summarize(rows, lambda r: r["same_lang"])))
+    L.append(md_stage_table(summarize(rows, lambda r: r["same_lang"]), label))
     L.append("")
 
     # Translate internals: model compute vs HTTP overhead (cross-language only).
@@ -257,9 +285,9 @@ def build_report(env, rows, cold_row, out_dir: Path):
         model_vals = [r["translate_model_s"] for r in xrows]
         http_vals = [r["translate_http_s"] for r in xrows if r.get("translate_http_s") is not None]
         L.append("## Inside the translate step (cross-language runs)\n")
-        L.append("Splitting translate into model compute (reported by the Param-2 "
+        L.append(f"Splitting translate into model compute (reported by the {label} "
                  "service) vs HTTP/network overhead shows whether the bottleneck "
-                 "is the 17B model or the service hop.\n")
+                 "is the translation model or the service hop.\n")
         L.append("| Component | Median (s) | p90 (s) |")
         L.append("|---|---|---|")
         L.append(f"| Model generation | {round(statistics.median(model_vals), 2)} "
@@ -294,6 +322,12 @@ def main():
     ap.add_argument("--out", default=str(Path(__file__).parent / "profiling_results"))
     ap.add_argument("--limit", type=int, default=None,
                     help="max clips per source language (quick smoke run)")
+    ap.add_argument("--translator", choices=sorted(TRANSLATORS), default="param",
+                    help="which translator the server is running, so the report "
+                         "is labeled correctly (param | indictrans). MUST match how "
+                         "the server was launched (TRANSLATOR=... in pod_setup.sh) — "
+                         "the profiler can't detect it, and a wrong value mislabels "
+                         "an otherwise-correct report.")
     ap.add_argument("--cold-start", action="store_true",
                     help="ONLY pass this if the server was JUST booted and has "
                          "served no requests yet. It pulls the first run aside as "
@@ -305,6 +339,7 @@ def main():
     data_root = Path(args.data).expanduser()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    tr = TRANSLATORS[args.translator]
 
     # Fail fast if the server isn't up — better than 50 timeouts.
     try:
@@ -317,7 +352,8 @@ def main():
     if not clips:
         sys.exit(f"No clips found under {data_root}/shrutilipi/. Check --data.")
 
-    env = collect_env(server)
+    env = collect_env(server, tr)
+    print(f">>> Translator label: {tr['label']} ({tr['model']})", flush=True)
     print(f">>> Environment: {env['gpu']} | commit {env['git_commit']}", flush=True)
     print(f">>> {len(clips)} clips, targets per matrix -> profiling...", flush=True)
 
@@ -361,7 +397,7 @@ def main():
         for r in rows:
             w.writerow({**r, "cold": False})
 
-    build_report(env, rows, cold_row, out_dir)
+    build_report(env, rows, cold_row, out_dir, tr)
     # Stamp env alongside, for full reproducibility.
     (out_dir / "environment.json").write_text(json.dumps(env, indent=2), encoding="utf-8")
 

@@ -1,0 +1,10 @@
+{
+  "date_utc": "2026-06-23T05:20:24+00:00",
+  "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+  "git_commit": "b2eb43e",
+  "transformers_main_server": "unknown",
+  "server_url": "http://localhost:8000",
+  "asr_model": "bharatgenai/Shrutam-2",
+  "tts_model": "bharatgenai/sooktam2",
+  "translate_model": "ai4bharat/indictrans2-indic-indic-1B"
+}
