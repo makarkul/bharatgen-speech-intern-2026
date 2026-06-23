@@ -19,6 +19,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Claude Code local config
+.claude/
+
 # Build / dist
 build/
 dist/
