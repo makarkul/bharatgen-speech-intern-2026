@@ -14,10 +14,10 @@ difference between "works first try" and "spend an afternoon debugging."
 
 > **Scope:** this document covers the `pipeline/` folder only (the sibling of the
 > `week*/` folders) — the integrated speech-translation pipeline. The weekly
-> learning notebooks are not part of this. The translator is **Param-2**.
-> *(A faster IndicTrans2 alternative exists in the repo as a separate, opt-in A/B
-> experiment — see the footnote in [Appendix A](#appendix-a--files-in-pipeline).
-> It is deliberately kept out of this deployment.)*
+> learning notebooks are not part of this. The **default** translator is
+> **Param-2**; a faster ~1B **IndicTrans2** alternative is selectable with a single
+> environment variable — see
+> [§6 · Switching the translator](#switching-the-translator-param-2-or-indictrans2).
 
 ---
 
@@ -287,6 +287,96 @@ It is heavily commented inline (search it for `[GOTCHA #N]`), but here's the map
 > and weights persist on `/workspace`. The script is safe to re-run anytime — it
 > skips what's already done.
 
+### Switching the translator: Param-2 or IndicTrans2
+
+The pipeline ships with **two interchangeable translators**, and which one runs is
+chosen by a single environment variable — **`TRANSLATOR`** — on the bring-up
+command. Nothing else changes: the main server, `server.py`, and the ASR/TTS stack
+are identical either way.
+
+| Command | Translator | Service port | HF token | Weights |
+|---|---|---|---|---|
+| `bash pipeline/pod_setup.sh`  *(= `TRANSLATOR=param …`)* | **Param-2** (17B — the default) | `8500` | **required** (gated) | ~34 GB |
+| `TRANSLATOR=indictrans bash pipeline/pod_setup.sh` | **IndicTrans2** (~1B) | `8501` | **none** (public) | ~4 GB |
+
+```bash
+# Param-2 — the default (these two are identical):
+bash /workspace/bharatgen-speech-intern-2026/pipeline/pod_setup.sh
+TRANSLATOR=param bash /workspace/bharatgen-speech-intern-2026/pipeline/pod_setup.sh
+
+# IndicTrans2 — the fast opt-in alternative:
+TRANSLATOR=indictrans bash /workspace/bharatgen-speech-intern-2026/pipeline/pod_setup.sh
+```
+
+**What the flag actually does** (so it isn't magic): `pod_setup.sh` reads
+`TRANSLATOR`, then in step `[5/8]` points the main server at the matching port via
+`PARAM_URL` — `http://localhost:8500` for Param-2, `:8501` for IndicTrans2 — and in
+`[6/8]` builds + starts that translator's service. The main server doesn't care
+which one: both services expose the **identical** `POST /translate` API
+(`{text,src,tgt}` → `{translation, model_seconds}`), so `server.py` needs **zero**
+changes. *(Heads-up: the env var stays named `PARAM_URL` even when it points at
+IndicTrans2 — it's just the variable `server.py` reads; the name is historical,
+don't let it confuse you.)*
+
+**Confirm which one is live** — the script announces it at the top and bottom of
+its run:
+
+```
+>>> Pipeline bring-up. Translator = indictrans
+...
+>>> Done. Translator=indictrans (port 8501).
+```
+
+…and you can hit the service directly (mind the port — `8500` vs `8501`):
+
+```bash
+curl -s http://localhost:8500/health    # Param-2     → {"ok":true,"loaded":true}
+curl -s http://localhost:8501/health    # IndicTrans2 → {"ok":true,"loaded":true}
+```
+
+**To switch when the pipeline is already up:** there is no live toggle — just
+**re-run** `pod_setup.sh` with the other `TRANSLATOR` value. Step `[5/8]` kills the
+running main server (`pkill -f "uvicorn server:app"`) and relaunches it pointed at
+the new translator (starting that translator's service if it isn't already up).
+~30s when everything's already built. *(The previously-running translator stays up
+on its own port, harmlessly — the main server just stops calling it. Reclaim its
+VRAM with `pkill -f "param_service:app"` or `pkill -f "indictrans_service:app"`.)*
+
+> **# why the first switch can be slow — translator weights download at SERVICE
+> start, not in `[0/8]`.** Step `[0/8]` fetches only the ASR/TTS checkpoints
+> (Shrutam + Sooktam). Each translator's weights come down the **first time its
+> service loads them**, into `HF_HOME=/workspace/hf_cache` — visible in the
+> translator log, **not** the `[0/8]` setup output. So the first switch to a
+> translator with an empty cache pays its download: **~34 GB for Param-2** (gated;
+> token required; needs the disk headroom) or **~4 GB for IndicTrans2** (public).
+> Once cached on the volume, every later switch is instant. *(Log location: Param-2
+> and an already-built IndicTrans2 relaunch log to `/workspace/translator.log`;
+> IndicTrans2's very first build is started by `indictrans_setup.sh`, which logs to
+> `/workspace/indictrans_service.log`.)*
+
+**Which to pick:**
+
+- **Param-2** — the project's primary / reference translator: a 17B "thinking"
+  LLM. **Slow and highly variable** (profiled translate median ~7s, p90 ~28s; ~60s
+  cold start) but it is the reference model. Needs the gated HF token and an
+  H100 80GB.
+- **IndicTrans2** — a dedicated ~1B translation model. On the same pod and corpus
+  it is **~20× faster on the translate step and ~3× faster end-to-end**
+  (cross-language total median **4.1s vs 13.3s**), with **near-constant** latency
+  (profiled translate ~0.4–0.5s warm, p90 ~0.7s — no blow-ups) and **no ~60s cold
+  start** (first request ~3s total). Public (no token), ~4 GB. Full head-to-head:
+  `pipeline/profiling_results_indictrans/REPORT.md` vs
+  `pipeline/profiling_results/REPORT.md`. *(Speed is settled; a translation
+  **quality** comparison vs Param-2 is the open question — IndicTrans2 already wins
+  decisively on latency.)*
+
+**Per-direction gotchas:**
+
+| Switching to | Watch for |
+|---|---|
+| **Param-2** | `HF_TOKEN` must be in `/workspace/.hf_token` — the script hard-aborts at `[6/8]` with "Param-2 is gated" without it. First load re-downloads ~34 GB if the cache was cleared (needs the free space), and it needs an H100 80GB or it OOMs. |
+| **IndicTrans2** | First use builds `indictrans_venv` by delegating to `indictrans_setup.sh` (one-time, a few minutes). No token, no gate. If that venv ever breaks: `rm -rf /workspace/indictrans_venv && bash pipeline/indictrans_setup.sh`. |
+
 ---
 
 ## 7. Watch it come up
@@ -382,13 +472,13 @@ everything already on the volume and relaunch in ~30s).
 | `requirements.txt` | The main ASR/TTS stack's pinned deps (installed into `main_venv`). |
 | `setup.sh` | **Older** single-service setup (home dir, no venvs). Superseded by `pod_setup.sh`; kept for reference. |
 
-> **Footnote — the IndicTrans2 experiment (not part of this deployment).** The
-> repo also contains `indictrans_setup.sh`, `indictrans_service.py`, and a
-> `_comparison_later/` harness. These are a **separate, opt-in A/B experiment**
-> testing the faster ~1B IndicTrans2 MT model as an alternative translator on its
-> own venv/port (`:8501`). They are deliberately **outside this Param-2
-> deployment** and do not run unless you explicitly pass `TRANSLATOR=indictrans`
-> to `pod_setup.sh`. Ignore them for a standard duplication.
+> **Footnote — the IndicTrans2 alternative translator.** The repo also contains
+> `indictrans_setup.sh`, `indictrans_service.py`, and a `_comparison_later/`
+> harness — the faster ~1B IndicTrans2 MT model, which runs as an alternative
+> translator on its own venv/port (`:8501`). Param-2 is the default; to run the
+> pipeline on IndicTrans2 instead, pass `TRANSLATOR=indictrans` to `pod_setup.sh`
+> — full instructions in
+> [§6 · Switching the translator](#switching-the-translator-param-2-or-indictrans2).
 
 ---
 
@@ -519,6 +609,8 @@ cd /workspace
 git clone https://github.com/makarkul/bharatgen-speech-intern-2026.git
 cd bharatgen-speech-intern-2026 && git checkout week3
 bash pipeline/pod_setup.sh                               # brings up Param-2 (the default)
+# ...or run the fast IndicTrans2 translator instead (no token needed):
+TRANSLATOR=indictrans bash pipeline/pod_setup.sh
 
 # ── Watch it come up ──
 tail -f /workspace/server.log /workspace/translator.log
